@@ -1,0 +1,11 @@
+# See docs/CONVENTIONS.md §2
+too-many-lines-threshold = 50
+too-many-arguments-threshold = 5
+cognitive-complexity-threshold = 15
+excessive-nesting-threshold = 4
+type-complexity-threshold = 250
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-dbg-in-tests = true
+doc-valid-idents = ["ClipFrame", "WinRT", "DirectWrite", ".."]

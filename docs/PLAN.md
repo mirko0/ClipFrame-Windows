@@ -24,7 +24,7 @@ Screenshots first (v1); video recording later, on the same capture pipeline.
 |---|---|
 | Idle RAM (tray only) | < 10 MB private bytes (M0 measured: 5.6 MB private, 14.8 MB working set incl. shared system DLLs) |
 | Idle CPU | 0 % (no wakeups) |
-| Hotkey → frozen overlay visible | < 150 ms cold GPU, < 60 ms warm |
+| Hotkey → frozen overlay visible | < 150 ms (measured, 2 × 1080p, RX 580: ~250 ms new helper, ~100–130 ms warm helper) |
 | Editor interaction | 60 fps+, repaint on change only |
 | Copy-to-clipboard after edit | < 100 ms after debounce for a 4K image |
 | RAM with editor open (single 4K capture) | < 120 MB |
@@ -36,13 +36,13 @@ Screenshots first (v1); video recording later, on the same capture pipeline.
 | Layer | Choice | Notes |
 |---|---|---|
 | Language | Rust (edition 2024), Cargo workspace | |
-| Windowing / event loop | `winit` (used directly, **not** eframe) | One event loop for the whole process lifetime; windows created and destroyed on demand. eframe can't be torn down and restarted, which blocks the "drop the GPU when idle" goal. |
-| GPU | `wgpu` (DX12 backend, Vulkan fallback) | One shared device for overlay + editor. |
-| 2D vector rendering | `vello` on the shared wgpu device | GPU compute renderer for shapes, arrows, strokes, text. Fallback if it proves immature: `vello_hybrid` / `tiny-skia`. |
-| Text layout | `parley` (+ `fontique` system fonts) | Feeds glyph runs to vello. |
-| Effects | Custom WGSL shaders | Pixelate, blur, spotlight mask, highlighter (multiply), magnifier loupe. |
-| UI chrome (toolbars, settings, onboarding) | `egui` via `egui-winit` + `egui-wgpu` | Same device; canvas is a vello-rendered texture shown inside egui. |
-| Screen capture | `windows-capture` (Windows.Graphics.Capture), DXGI Duplication fallback | Same API later produces video frames. |
+| Windowing / event loop | `winit` (used directly) | One event loop for the whole process lifetime; windows created and destroyed on demand. |
+| GPU | **Direct3D 11 + Direct2D** via windows-rs (`cf-render`) | Decided in M1 after measuring: ~65–110 ms / ~7 MB to create vs ~230–410 ms / ~150 MB for wgpu on Direct3D 12 (which also never released below ~85 MB). Flip-model swap chain per window. |
+| 2D vector rendering | Direct2D | Paths, strokes with dash styles, rounded shapes, gradients, anti-aliasing: everything the annotation tools need. |
+| Text | DirectWrite | System fonts, ClearType-quality layout. |
+| Effects | Direct2D built-in effects | Gaussian blur, scale (pixelate), blend modes (highlighter = multiply), masks (spotlight), all on the GPU. |
+| UI chrome (toolbars, settings, onboarding) | Toolbars drawn with Direct2D; settings/onboarding window **to decide in M3** (native Win32 controls vs WebView2) | egui was dropped together with wgpu. |
+| Screen capture | GDI `BitBlt` in M1 (fast, no start-up cost); Windows.Graphics.Capture / DXGI Duplication later for HDR and video | Same `capture_rect` signature either way. |
 | Win32 / WinRT | `windows` crate (windows-rs) | DPI, UI Automation, clipboard, OCR, toasts, registry. |
 | Global hotkeys | `global-hotkey` | Integrates with the winit loop. Low-level keyboard hook only as fallback. |
 | Tray | `tray-icon` | |
@@ -56,11 +56,23 @@ Screenshots first (v1); video recording later, on the same capture pipeline.
 
 ### GPU lifecycle
 
-- No GPU device at idle.
-- On hotkey, the capture starts **in parallel** with device creation, so the cold-start
-  cost is hidden behind the capture itself.
-- After the last window closes, the device is kept warm for a configurable period
-  (default 5 min), then dropped. Setting: *"Keep GPU ready"* = never / 5 min / always.
+- No GPU device until the first capture.
+- On hotkey, the screen is captured on a worker thread **in parallel** with device creation.
+- After the last window closes, the device is kept for a configurable period (default
+  5 min), then dropped. Setting: *"Keep GPU ready"* = never / 5 min / always.
+- **Why a helper process:** once a swap chain has been presented, the GPU driver keeps
+  ~40–60 MB inside the process even after the device is dropped (AMD RX 580), and recreating
+  the device repeatedly creeps upward. So all GPU work runs in a **capture helper process**
+  (`clipframe.exe --capture-helper <request>`), never in the tray:
+  - The tray finds a running helper through a hidden message-only window
+    (`ClipFrame.CaptureHelper`) and posts it the request; if none runs, it starts one. Either
+    way it first passes on foreground rights (`AllowSetForegroundWindow`) so the overlay gets
+    keyboard focus.
+  - The helper re-reads settings on every request, stays alive for the *Keep GPU ready*
+    period, then exits (after waiting for unfinished saves). "Repeat last region" survives
+    the exit through `%LOCALAPPDATA%\ClipFrame\state.json`.
+  - Measured (2 × 1080p, RX 580): tray **5.9 MB** throughout; helper ~59–63 MB while alive;
+    hotkey → overlay **~250 ms** with a new helper, **~100–130 ms** with a warm one.
 
 ### Crate layout
 
@@ -69,7 +81,7 @@ clipframe/
 ├─ crates/
 │  ├─ cf-core/      # pure logic: geometry, document model, config, undo/redo — no Win32, fully unit-testable
 │  ├─ cf-platform/  # all unsafe/Win32/WinRT: capture, DPI, UIA, clipboard, OCR, toasts, hotkeys
-│  ├─ cf-render/    # wgpu device mgmt, vello scene building, WGSL effects, offscreen export
+│  ├─ cf-render/    # D3D11/Direct2D/DirectWrite behind safe types: Gpu, WindowSurface, GpuImage, Canvas
 │  ├─ cf-detect/    # QR/barcode (rxing), OCR result parsing, sensitive-data detection (emails, IPs, tokens)
 │  └─ cf-app/       # binary: event loop, windows (overlay, editor, settings, onboarding), tray
 ├─ docs/
@@ -209,7 +221,7 @@ All edits go through command objects → unlimited undo/redo.
 | M0 | Skeleton | Workspace, lints, CI, tray, hotkey, config, logging |
 | M1 | Capture | Frozen multi-monitor overlay, free/rect/monitor modes, loupe, save + clipboard |
 | M2 | Window & element modes | EnumWindows snapshot, UIA element hit-testing, browser content area |
-| M3 | Editor core | Document model, undo/redo, pen/line/arrow/shapes/text, vello rendering, export |
+| M3 | Editor core | Document model, undo/redo, pen/line/arrow/shapes/text, Direct2D rendering, export |
 | M4 | Effects | Pixelate/redact, blur, highlighter, global spotlight layer, magnify inset, crop |
 | M5 | Smart | OCR copy, QR/barcode chips, auto-redact suggestions |
 | M6 | Workflow | Toasts, pin to screen, history, drag-out, filename templates |
@@ -220,10 +232,14 @@ All edits go through command objects → unlimited undo/redo.
 
 ## 9. Risks / open questions
 
-- **vello maturity.** If text quality or a needed feature falls short, swap the renderer
-  behind the `cf-render` trait (fallback: `vello_hybrid` or `tiny-skia` + upload).
+- **Helper hand-off race:** a request posted in the instant between the helper deciding to
+  exit and destroying its message window is lost (the user presses the hotkey again).
+  Rare (sub-millisecond window); fix if it ever shows up in practice.
+- **Settings/onboarding UI toolkit** is open (native Win32 vs WebView2); decide in M3.
 - **UIA latency** in heavy pages: hit-tests can take tens of ms. Mitigate with a background
   thread, debounce and a per-capture element cache.
-- **Cold GPU start** on slow machines: measure; the *Keep GPU ready* setting covers it.
-- **Zero-copy capture → wgpu** (shared D3D handles) is an optimisation for later. v1 does
-  one CPU readback per monitor, which OCR/QR/saving need anyway.
+- **HDR monitors**: GDI capture returns the SDR-mapped image; switch to
+  Windows.Graphics.Capture with tone-mapping when HDR support is added.
+- **Controlled Folder Access** (Windows ransomware protection) can block saving into
+  Pictures; ClipFrame falls back to `%LOCALAPPDATA%\ClipFrame\captures` and logs how to
+  allow it. Onboarding (M7) should detect this and explain it.

@@ -254,6 +254,7 @@ dependencies = [
  "anyhow",
  "cf-core",
  "cf-platform",
+ "cf-render",
  "global-hotkey",
  "tracing",
  "tracing-appender",
@@ -267,6 +268,7 @@ dependencies = [
 name = "cf-core"
 version = "0.1.0"
 dependencies = [
+ "png",
  "proptest",
  "serde",
  "serde_json",
@@ -278,9 +280,23 @@ dependencies = [
 name = "cf-platform"
 version = "0.1.0"
 dependencies = [
+ "cf-core",
  "dirs",
+ "raw-window-handle",
  "thiserror 2.0.21",
  "windows",
+]
+
+[[package]]
+name = "cf-render"
+version = "0.1.0"
+dependencies = [
+ "cf-core",
+ "raw-window-handle",
+ "thiserror 2.0.21",
+ "tracing",
+ "windows",
+ "windows-numerics",
 ]
 
 [[package]]

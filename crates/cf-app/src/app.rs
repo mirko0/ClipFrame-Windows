@@ -1,10 +1,10 @@
-//! The process-wide event loop. Idle cost is zero: `ControlFlow::Wait` sleeps until the OS
-//! delivers a hotkey, tray or (later) window event.
-
-use std::path::Path;
+//! The tray process: tray icon, global hotkeys and settings. It never opens windows or
+//! touches the GPU — captures are handed to the helper process (see `helper`). Idle cost is
+//! zero: `ControlFlow::Wait` sleeps until the OS delivers a hotkey or tray event.
 
 use anyhow::Context as _;
-use cf_core::config::{self, Config, LoadOutcome};
+use cf_core::capture_request::CaptureRequest;
+use cf_core::config::Config;
 use cf_platform::paths::AppPaths;
 use cf_platform::shell;
 use global_hotkey::{GlobalHotKeyEvent, HotKeyState};
@@ -16,7 +16,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::actions::Action;
+use crate::helper_client;
 use crate::hotkeys::HotkeyService;
+use crate::settings::load_config;
 use crate::tray::Tray;
 
 /// Events forwarded into the winit loop from the hotkey and tray crates.
@@ -133,12 +135,8 @@ impl App {
     fn perform(&mut self, action: Action, event_loop: &ActiveEventLoop) {
         tracing::debug!(?action, "performing action");
         match action {
-            Action::Capture | Action::RepeatLast => {
-                tracing::info!(
-                    ?action,
-                    "capture requested (capture pipeline arrives in M1)"
-                );
-            }
+            Action::Capture => helper_client::request(CaptureRequest::Interactive),
+            Action::RepeatLast => helper_client::request(CaptureRequest::RepeatLast),
             Action::OpenCapturesFolder => {
                 let dir = self
                     .config
@@ -182,32 +180,6 @@ fn create_services() -> anyhow::Result<Services> {
         tray: Tray::new().context("creating the tray icon")?,
         hotkeys: HotkeyService::new().context("creating the hotkey manager")?,
     })
-}
-
-fn load_config(path: &Path) -> Config {
-    match config::load_or_create(path) {
-        Ok((config, outcome)) => {
-            log_load_outcome(path, &outcome);
-            config
-        }
-        Err(err) => {
-            tracing::error!("{:#}; using default settings", anyhow::Error::from(err));
-            Config::default()
-        }
-    }
-}
-
-fn log_load_outcome(path: &Path, outcome: &LoadOutcome) {
-    match outcome {
-        LoadOutcome::Loaded => tracing::info!(path = %path.display(), "settings loaded"),
-        LoadOutcome::CreatedDefault => {
-            tracing::info!(path = %path.display(), "default settings created");
-        }
-        LoadOutcome::RecoveredFromInvalid { backup, reason } => tracing::warn!(
-            backup = %backup.display(),
-            "settings file was invalid ({reason}); reset to defaults, old file kept"
-        ),
-    }
 }
 
 fn report(action: Action, result: std::io::Result<()>) {

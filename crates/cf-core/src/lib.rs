@@ -6,5 +6,12 @@
 #![warn(missing_docs)]
 
 pub mod capture_mode;
+pub mod capture_request;
 pub mod config;
+pub mod encode;
+pub mod geometry;
 pub mod hotkey;
+pub mod image;
+pub mod output;
+pub mod selection;
+pub mod state;

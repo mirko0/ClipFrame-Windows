@@ -61,10 +61,11 @@ Exceeding a soft limit is allowed with a reason; exceeding a hard limit needs an
 
 ## 3. Structure & architecture
 
-- **Crate boundaries are dependency rules.** `cf-core` must never depend on `windows`,
-  `wgpu` or `winit`. If logic needs to be tested, it belongs in `cf-core`.
-- **All `unsafe` lives in `cf-platform`** (and in narrowly scoped GPU interop in
-  `cf-render`). Every `unsafe` block has a `// SAFETY:` comment stating the invariant.
+- **Crate boundaries are dependency rules.** `cf-core` must never depend on `windows`
+  or `winit`. If logic needs to be tested, it belongs in `cf-core`.
+- **All `unsafe` lives in `cf-platform`** (Win32/WinRT) **and `cf-render`** (Direct3D /
+  Direct2D / DirectWrite COM calls); `cf-app` has none. Every `unsafe` block has a
+  `// SAFETY:` comment stating the invariant.
   Wrap every Win32/WinRT call in a safe function with a Rust-typed signature.
 - **One responsibility per module.** Prefer `capture/monitor.rs`, `capture/window.rs` over
   one `capture.rs` with everything in it.

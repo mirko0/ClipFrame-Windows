@@ -11,6 +11,9 @@ use super::Config;
 pub enum LoadOutcome {
     /// The existing file was read.
     Loaded,
+    /// The existing file was read and rewritten to add settings it was missing (written by
+    /// an older version), so every option is visible to the user.
+    Upgraded,
     /// No file existed; defaults were written.
     CreatedDefault,
     /// The file was unreadable as config; it was moved to `backup` and defaults were written.
@@ -55,7 +58,8 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ConfigError + '_ {
 /// Returns [`ConfigError`] when the file cannot be read, backed up or written.
 pub fn load_or_create(path: &Path) -> Result<(Config, LoadOutcome), ConfigError> {
     match fs::read_to_string(path) {
-        Ok(text) => parse_or_recover(path, &text),
+        // Editors such as older Notepad save UTF-8 with a byte-order mark; serde rejects it.
+        Ok(text) => parse_or_recover(path, text.trim_start_matches('\u{feff}')),
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
             let config = Config::default();
             save(path, &config)?;
@@ -67,7 +71,7 @@ pub fn load_or_create(path: &Path) -> Result<(Config, LoadOutcome), ConfigError>
 
 fn parse_or_recover(path: &Path, text: &str) -> Result<(Config, LoadOutcome), ConfigError> {
     let err = match serde_json::from_str::<Config>(text) {
-        Ok(config) => return Ok((config, LoadOutcome::Loaded)),
+        Ok(config) => return upgrade_if_incomplete(path, text, config),
         Err(err) => err,
     };
     let backup = path.with_extension("json.invalid");
@@ -81,6 +85,31 @@ fn parse_or_recover(path: &Path, text: &str) -> Result<(Config, LoadOutcome), Co
             reason: err.to_string(),
         },
     ))
+}
+
+/// Rewrites the file when it lacks fields the current schema has.
+fn upgrade_if_incomplete(
+    path: &Path,
+    text: &str,
+    config: Config,
+) -> Result<(Config, LoadOutcome), ConfigError> {
+    let on_disk: serde_json::Value = serde_json::from_str(text)?;
+    let complete = serde_json::to_value(&config)?;
+    if has_all_keys(&on_disk, &complete) {
+        return Ok((config, LoadOutcome::Loaded));
+    }
+    save(path, &config)?;
+    Ok((config, LoadOutcome::Upgraded))
+}
+
+/// Whether every object key in `reference` also exists in `value` (recursively).
+fn has_all_keys(value: &serde_json::Value, reference: &serde_json::Value) -> bool {
+    match (value, reference) {
+        (serde_json::Value::Object(have), serde_json::Value::Object(want)) => want
+            .iter()
+            .all(|(key, sub)| have.get(key).is_some_and(|v| has_all_keys(v, sub))),
+        _ => true,
+    }
 }
 
 /// Writes `config` to `path` atomically (write to a temp file, then rename over).
@@ -147,6 +176,33 @@ mod tests {
         };
         assert_eq!(config, Config::default());
         assert!(fs::read_to_string(backup).unwrap().contains("Nope+Q"));
+        assert_eq!(load_or_create(&path).unwrap().1, LoadOutcome::Loaded);
+    }
+
+    #[test]
+    fn file_missing_new_settings_is_upgraded_and_keeps_user_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_path(&dir);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, r#"{ "clipboard": { "copy_on_capture": false } }"#).unwrap();
+
+        let (config, outcome) = load_or_create(&path).unwrap();
+
+        assert_eq!(outcome, LoadOutcome::Upgraded);
+        assert!(!config.clipboard.copy_on_capture);
+        let rewritten = fs::read_to_string(&path).unwrap();
+        assert!(rewritten.contains("update_on_edit") && rewritten.contains("keep_gpu_ready"));
+        assert_eq!(load_or_create(&path).unwrap().1, LoadOutcome::Loaded);
+    }
+
+    #[test]
+    fn utf8_byte_order_mark_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_path(&dir);
+        save(&path, &Config::default()).unwrap();
+        let json = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("\u{feff}{json}")).unwrap();
+
         assert_eq!(load_or_create(&path).unwrap().1, LoadOutcome::Loaded);
     }
 

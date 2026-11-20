@@ -1,0 +1,29 @@
+[package]
+name = "cf-render"
+description = "GPU rendering for ClipFrame: Direct3D 11 + Direct2D + DirectWrite behind a safe API."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cf-core.workspace = true
+raw-window-handle.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+windows-numerics.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+[lints]
+workspace = true

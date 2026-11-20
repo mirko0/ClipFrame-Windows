@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 const APP_DIR: &str = "ClipFrame";
 const CONFIG_FILE: &str = "config.json";
+const STATE_FILE: &str = "state.json";
 const PORTABLE_MARKER: &str = "portable";
 
 /// Resolved application directories.
@@ -21,6 +22,11 @@ pub struct AppPaths {
     pub log_dir: PathBuf,
     /// Captures folder used when the config doesn't set one.
     pub default_captures_dir: PathBuf,
+    /// Always-writable folder used when saving to the chosen folder fails (for example when
+    /// Windows' Controlled Folder Access blocks the Pictures folder).
+    pub fallback_captures_dir: PathBuf,
+    /// Small runtime state shared by the tray and the capture helper.
+    pub state_file: PathBuf,
     /// Whether portable mode is active.
     pub is_portable: bool,
 }
@@ -89,6 +95,8 @@ impl AppPaths {
                 config_file: base.join(CONFIG_FILE),
                 log_dir: base.join("logs"),
                 default_captures_dir: base.join("captures"),
+                fallback_captures_dir: base.join("captures"),
+                state_file: base.join(STATE_FILE),
                 is_portable: true,
             });
         }
@@ -102,6 +110,8 @@ impl AppPaths {
             config_file: roaming.join(CONFIG_FILE),
             log_dir: local.join("logs"),
             default_captures_dir,
+            fallback_captures_dir: local.join("captures"),
+            state_file: local.join(STATE_FILE),
             is_portable: false,
         })
     }

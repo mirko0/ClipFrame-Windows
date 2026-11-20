@@ -14,10 +14,11 @@ const MAX_LOG_FILES: usize = 7;
 
 /// Initialises the global subscriber. Keep the returned guard alive until exit so buffered
 /// log lines are flushed.
-pub fn init(log_dir: &Path) -> anyhow::Result<WorkerGuard> {
+/// `file_prefix` keeps each process in its own file (`clipframe`, `clipframe-helper`).
+pub fn init(log_dir: &Path, file_prefix: &str) -> anyhow::Result<WorkerGuard> {
     let appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("clipframe")
+        .filename_prefix(file_prefix)
         .filename_suffix("log")
         .max_log_files(MAX_LOG_FILES)
         .build(log_dir)

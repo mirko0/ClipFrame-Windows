@@ -32,6 +32,7 @@ pub fn delivery(config: &Config, paths: &AppPaths) -> Delivery {
         update_clipboard: config.clipboard.update_on_edit,
         save_dir: config.output.captures_dir(&paths.default_captures_dir),
         fallback_dir: paths.fallback_captures_dir.clone(),
+        spotlight_dim: config.editor.spotlight_opacity(),
     });
     Delivery {
         save_dir,

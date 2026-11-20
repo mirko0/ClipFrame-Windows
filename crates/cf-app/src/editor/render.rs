@@ -1,29 +1,152 @@
 //! Drawing annotations with Direct2D. Coordinates are image pixels: the caller sets the
 //! view transform (on screen) or none (export), so both paths draw identically.
+//!
+//! Layers, bottom to top: the image, region effects (blur, pixelate, redact), the single
+//! spotlight dim layer, then every other annotation (magnify insets stay bright).
 
-use cf_core::annotate::{Annotation, Dash, Document, Preview, Rgba, Shape, Vec2};
-use cf_render::{Canvas, Color, LineDash, RectF, Stroke};
+use cf_core::annotate::{Annotation, Area, Dash, Document, Preview, Rgba, Shape, Vec2, inset_size};
+use cf_render::{Canvas, Color, GpuImage, LineDash, RectF, Stroke};
+
+/// Rounding of spotlight holes, in image pixels.
+const SPOTLIGHT_RADIUS: f32 = 6.0;
 
 /// Selection and caret colour.
 pub fn accent() -> Color {
     Color::rgba8(0x4F, 0xA3, 0xFF, 0xFF)
 }
 
+/// What image effects draw from.
+pub struct Backdrop<'a> {
+    /// The captured image.
+    pub base: &'a GpuImage,
+    /// Opacity of the spotlight dim layer.
+    pub dim: f32,
+}
+
 /// Every annotation, skipping the one the preview replaces, then the preview on top.
-pub fn document(canvas: &Canvas<'_>, doc: &Document, preview: Option<&Preview>) {
+pub fn document(
+    canvas: &Canvas<'_>,
+    backdrop: &Backdrop<'_>,
+    doc: &Document,
+    preview: Option<&Preview>,
+) {
     let hidden = preview.and_then(|p| p.replaces);
-    for (index, item) in doc.items().iter().enumerate() {
-        if Some(index) != hidden {
-            annotation(canvas, item, doc.step_number(index));
-        }
-    }
+    let mut items: Vec<(&Annotation, usize)> = doc
+        .items()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != hidden)
+        .map(|(index, item)| (item, doc.step_number(index)))
+        .collect();
     if let Some(preview) = preview {
         let number = hidden.map_or_else(|| doc.next_step_number(), |i| doc.step_number(i));
-        annotation(canvas, &preview.item, number);
-        if preview.typing {
-            caret(canvas, &preview.item);
+        items.push((&preview.item, number));
+    }
+    for (item, _) in &items {
+        region_effect(canvas, backdrop.base, item);
+    }
+    spotlight(canvas, backdrop, &items);
+    for (item, step) in &items {
+        if let Shape::Magnify { .. } = item.shape {
+            magnify(canvas, backdrop.base, item);
+        } else {
+            annotation(canvas, item, *step);
         }
     }
+    if let Some(preview) = preview.filter(|p| p.typing) {
+        caret(canvas, &preview.item);
+    }
+}
+
+/// While cropping: dims everything outside `crop` and frames it.
+pub fn crop_overlay(canvas: &Canvas<'_>, image: RectF, crop: Area, zoom: f32) {
+    let area = rect(crop.min, crop.max);
+    canvas.fill_outside(image, &[area], 0.0, Color::rgba8(0, 0, 0, 0x99));
+    let stroke = Stroke {
+        width: 1.5 / zoom,
+        color: accent(),
+        dash: LineDash::Dashed,
+    };
+    canvas.stroke_rect(area, &stroke);
+}
+
+/// Blur, pixelate or solid redaction. Pixelation that fails to render falls back to a
+/// solid box, so a redaction never shows the original pixels.
+fn region_effect(canvas: &Canvas<'_>, base: &GpuImage, item: &Annotation) {
+    let style = &item.style;
+    let (area, drawn) = match item.shape {
+        Shape::Blur { a, b } => {
+            let area = rect(a, b);
+            (area, canvas.draw_blurred(base, area, style.blur_sigma()))
+        }
+        Shape::Redact { a, b } if !style.filled => {
+            let area = rect(a, b);
+            (area, canvas.draw_pixelated(base, area, style.pixel_block()))
+        }
+        Shape::Redact { a, b } => (rect(a, b), false),
+        _ => return,
+    };
+    if !drawn {
+        canvas.fill_rect(area, Color::rgba8(0x10, 0x10, 0x10, 0xFF));
+    }
+}
+
+/// The single dim layer with every spotlight as a hole.
+fn spotlight(canvas: &Canvas<'_>, backdrop: &Backdrop<'_>, items: &[(&Annotation, usize)]) {
+    let holes: Vec<RectF> = items
+        .iter()
+        .filter_map(|(item, _)| match item.shape {
+            Shape::Spotlight { a, b } => Some(rect(a, b)),
+            _ => None,
+        })
+        .collect();
+    if holes.is_empty() {
+        return;
+    }
+    let image = image_rect(backdrop.base);
+    let dim = Color::rgba8(0, 0, 0, 0xFF);
+    canvas.fill_outside(
+        image,
+        &holes,
+        SPOTLIGHT_RADIUS,
+        Color {
+            a: backdrop.dim,
+            ..dim
+        },
+    );
+}
+
+/// A magnified copy of the source area, framed, plus a thin frame around the source.
+fn magnify(canvas: &Canvas<'_>, base: &GpuImage, item: &Annotation) {
+    let Shape::Magnify { a, b, at } = item.shape else {
+        return;
+    };
+    let image = image_rect(base);
+    let source = Area::from_corners(a, b).clamp_to(Vec2::new(image.w, image.h));
+    let size = inset_size(source.min, source.max);
+    let inset = RectF::new(at.x, at.y, size.x, size.y);
+    let source = rect(source.min, source.max);
+    if !source.is_positive() {
+        return;
+    }
+    canvas.draw_image(base, inset, Some(source), false);
+    let style = &item.style;
+    let frame = Stroke {
+        width: style.width,
+        color: color(style.color),
+        dash: dash(style.dash),
+    };
+    canvas.stroke_rect(inset, &frame);
+    let thin = Stroke {
+        width: (style.width / 2.0).max(1.5),
+        ..frame
+    };
+    canvas.stroke_rect(source, &thin);
+}
+
+#[allow(clippy::cast_precision_loss)] // image sizes
+fn image_rect(base: &GpuImage) -> RectF {
+    RectF::new(0.0, 0.0, base.width() as f32, base.height() as f32)
 }
 
 /// A dashed frame around `item` (the selection), `px` thick on screen at `zoom`.
@@ -70,6 +193,15 @@ pub fn annotation(canvas: &Canvas<'_>, item: &Annotation, step: usize) {
             }
         }
         Shape::Step { at } => step_badge(canvas, *at, style.step_radius(), color, step),
+        Shape::Highlight(points) => {
+            let points: Vec<(f32, f32)> = points.iter().map(|p| (p.x, p.y)).collect();
+            canvas.stroke_highlight(&points, style.highlight_width(), color);
+        }
+        // Drawn in their own layers (they need the image).
+        Shape::Blur { .. }
+        | Shape::Redact { .. }
+        | Shape::Spotlight { .. }
+        | Shape::Magnify { .. } => {}
     }
 }
 

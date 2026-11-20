@@ -25,9 +25,10 @@ pub const OPACITIES: [u8; 3] = [255, 160, 80];
 pub enum Command {
     Tool(Tool),
     Color(Rgba),
-    Width(f32),
     /// Thinner (`-1`) or thicker (`+1`).
     WidthStep(i8),
+    /// Next thickness, wrapping around (toolbar button).
+    CycleWidth,
     CycleDash,
     ToggleFill,
     CycleOpacity,
@@ -51,9 +52,12 @@ impl Command {
                 color: color.with_alpha(style.color.a),
                 ..style
             },
-            Self::Width(width) => Style { width, ..style },
             Self::WidthStep(step) => Style {
                 width: step_width(style.width, step),
+                ..style
+            },
+            Self::CycleWidth => Style {
+                width: next_width(style.width),
                 ..style
             },
             Self::CycleDash => Style {
@@ -73,11 +77,19 @@ impl Command {
     }
 }
 
-fn step_width(width: f32, step: i8) -> f32 {
-    let index = WIDTHS
+fn width_index(width: f32) -> usize {
+    WIDTHS
         .iter()
         .position(|w| (w - width).abs() < f32::EPSILON)
-        .unwrap_or(1);
+        .unwrap_or(1)
+}
+
+fn next_width(width: f32) -> f32 {
+    WIDTHS[(width_index(width) + 1) % WIDTHS.len()]
+}
+
+fn step_width(width: f32, step: i8) -> f32 {
+    let index = width_index(width);
     let next = if step < 0 {
         index.saturating_sub(1)
     } else {
@@ -144,6 +156,12 @@ fn letter_command(text: &str) -> Option<Command> {
         "e" => tool(Tool::Ellipse),
         "t" => tool(Tool::Text),
         "n" => tool(Tool::Step),
+        "h" => tool(Tool::Highlighter),
+        "b" => tool(Tool::Blur),
+        "x" => tool(Tool::Redact),
+        "s" => tool(Tool::Spotlight),
+        "m" => tool(Tool::Magnify),
+        "c" => tool(Tool::Crop),
         "d" => Some(Command::CycleDash),
         "f" => Some(Command::ToggleFill),
         "o" => Some(Command::CycleOpacity),
@@ -166,6 +184,7 @@ mod tests {
     #[test]
     fn letters_pick_tools_and_digits_pick_colours() {
         assert_eq!(letter_command("A"), Some(Command::Tool(Tool::Arrow)));
+        assert_eq!(letter_command("c"), Some(Command::Tool(Tool::Crop)));
         assert_eq!(letter_command("2"), Some(Command::Color(COLORS[1])));
         assert_eq!(letter_command("9"), None);
         assert_eq!(letter_command("0"), None);
@@ -207,6 +226,8 @@ mod tests {
         assert_eq!(thick.map(|s| s.width), Some(8.0));
         let thickest = thick.and_then(|s| Command::WidthStep(1).restyle(s));
         assert_eq!(thickest.map(|s| s.width), Some(8.0));
+        let wrapped = thickest.and_then(|s| Command::CycleWidth.restyle(s));
+        assert_eq!(wrapped.map(|s| s.width), Some(2.0));
         let dashed = Command::CycleDash.restyle(Style::default());
         assert_eq!(dashed.map(|s| s.dash), Some(Dash::Dashed));
         let faded = Command::CycleOpacity.restyle(Style::default());

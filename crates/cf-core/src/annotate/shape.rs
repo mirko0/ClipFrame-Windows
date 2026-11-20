@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::area::Area;
+
 /// A point or offset in image pixels.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Vec2 {
@@ -124,7 +126,25 @@ impl Style {
     pub fn arrow_head(&self) -> f32 {
         8.0 + self.width * 3.0
     }
+
+    /// Width of a highlighter stroke.
+    pub fn highlight_width(&self) -> f32 {
+        8.0 + self.width * 4.0
+    }
+
+    /// Standard deviation of a blur.
+    pub fn blur_sigma(&self) -> f32 {
+        4.0 + self.width * 2.0
+    }
+
+    /// Edge length of a pixelation block, in whole pixels.
+    pub fn pixel_block(&self) -> f32 {
+        (6.0 + self.width * 2.5).round()
+    }
 }
+
+/// How much a magnify inset enlarges its source.
+pub const MAGNIFY_ZOOM: f32 = 2.0;
 
 /// The geometry of one annotation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -171,22 +191,66 @@ pub enum Shape {
         /// Centre.
         at: Vec2,
     },
+    /// Freehand highlighter, drawn "under the ink" so dark text stays readable.
+    Highlight(Vec<Vec2>),
+    /// Blurred region (looks redacted but is not safe for sensitive data).
+    Blur {
+        /// One corner.
+        a: Vec2,
+        /// The opposite corner.
+        b: Vec2,
+    },
+    /// Pixelated region, or a solid box when the style is filled.
+    Redact {
+        /// One corner.
+        a: Vec2,
+        /// The opposite corner.
+        b: Vec2,
+    },
+    /// A hole in the single, global spotlight dim layer.
+    Spotlight {
+        /// One corner.
+        a: Vec2,
+        /// The opposite corner.
+        b: Vec2,
+    },
+    /// The source rectangle `a`â€“`b` shown [`MAGNIFY_ZOOM`] times larger, with the inset's
+    /// top-left at `at`.
+    Magnify {
+        /// One source corner.
+        a: Vec2,
+        /// The opposite source corner.
+        b: Vec2,
+        /// Top-left of the inset.
+        at: Vec2,
+    },
 }
 
 impl Shape {
     /// Moves the shape by `d`.
     pub fn translate(&mut self, d: Vec2) {
         match self {
-            Self::Pen(points) => points.iter_mut().for_each(|p| *p = p.plus(d)),
+            Self::Pen(points) | Self::Highlight(points) => {
+                for p in points {
+                    *p = p.plus(d);
+                }
+            }
             Self::Line { from, to } | Self::Arrow { from, to } => {
                 *from = from.plus(d);
                 *to = to.plus(d);
             }
-            Self::Rect { a, b } | Self::Ellipse { a, b } => {
+            Self::Rect { a, b }
+            | Self::Ellipse { a, b }
+            | Self::Blur { a, b }
+            | Self::Redact { a, b }
+            | Self::Spotlight { a, b } => {
                 *a = a.plus(d);
                 *b = b.plus(d);
             }
-            Self::Text { at, .. } | Self::Step { at } => *at = at.plus(d),
+            // A magnify inset moves on its own; its source stays put.
+            Self::Text { at, .. } | Self::Step { at } | Self::Magnify { at, .. } => {
+                *at = at.plus(d);
+            }
         }
     }
 
@@ -194,9 +258,14 @@ impl Shape {
     pub fn is_degenerate(&self) -> bool {
         const MIN: f32 = 2.0;
         match self {
-            Self::Pen(points) => points.len() < 2,
+            Self::Pen(points) | Self::Highlight(points) => points.len() < 2,
             Self::Line { from, to } | Self::Arrow { from, to } => to.minus(*from).length() < MIN,
-            Self::Rect { a, b } | Self::Ellipse { a, b } => {
+            Self::Rect { a, b }
+            | Self::Ellipse { a, b }
+            | Self::Blur { a, b }
+            | Self::Redact { a, b }
+            | Self::Spotlight { a, b }
+            | Self::Magnify { a, b, .. } => {
                 let d = b.minus(*a);
                 d.x.abs() < MIN || d.y.abs() < MIN
             }
@@ -217,15 +286,24 @@ pub struct Annotation {
 
 impl Annotation {
     /// Approximate bounds `(min, max)` including stroke width; text is estimated from its
-    /// character count (exact layout is a rendering concern).
+    /// character count (exact layout is a rendering concern). A magnify item's bounds are
+    /// its inset (what gets selected and moved).
     pub fn bounds(&self) -> (Vec2, Vec2) {
-        let half = self.style.width / 2.0;
+        let half = match self.shape {
+            Shape::Highlight(_) => self.style.highlight_width() / 2.0,
+            Shape::Blur { .. } | Shape::Redact { .. } | Shape::Spotlight { .. } => 0.0,
+            _ => self.style.width / 2.0,
+        };
         let (min, max) = match &self.shape {
-            Shape::Pen(points) => span(points.iter().copied()),
+            Shape::Pen(points) | Shape::Highlight(points) => span(points.iter().copied()),
             Shape::Line { from, to }
             | Shape::Arrow { from, to }
             | Shape::Rect { a: from, b: to }
-            | Shape::Ellipse { a: from, b: to } => span([*from, *to]),
+            | Shape::Ellipse { a: from, b: to }
+            | Shape::Blur { a: from, b: to }
+            | Shape::Redact { a: from, b: to }
+            | Shape::Spotlight { a: from, b: to } => span([*from, *to]),
+            Shape::Magnify { a, b, at } => (*at, at.plus(inset_size(*a, *b))),
             Shape::Text { at, text } => {
                 let size = self.style.text_size();
                 let lines = text.lines().count().max(1);
@@ -244,6 +322,12 @@ impl Annotation {
             max.plus(Vec2::new(half, half)),
         )
     }
+}
+
+/// Size of the inset that magnifies the source rectangle `a`â€“`b`.
+pub fn inset_size(a: Vec2, b: Vec2) -> Vec2 {
+    let area = Area::from_corners(a, b);
+    Vec2::new(area.width() * MAGNIFY_ZOOM, area.height() * MAGNIFY_ZOOM)
 }
 
 fn span(points: impl IntoIterator<Item = Vec2>) -> (Vec2, Vec2) {
@@ -303,6 +387,26 @@ mod tests {
             text: "  ".into(),
         };
         assert!(text.is_degenerate());
+    }
+
+    #[test]
+    fn magnify_moves_and_bounds_its_inset_only() {
+        let mut item = Annotation {
+            shape: Shape::Magnify {
+                a: Vec2::new(10.0, 10.0),
+                b: Vec2::new(30.0, 20.0),
+                at: Vec2::new(100.0, 0.0),
+            },
+            style: Style::default(),
+        };
+        item.shape.translate(Vec2::new(5.0, 5.0));
+        let Shape::Magnify { a, at, .. } = item.shape else {
+            unreachable!("still a magnify item")
+        };
+        assert_eq!((a, at), (Vec2::new(10.0, 10.0), Vec2::new(105.0, 5.0)));
+        let (min, max) = item.bounds();
+        assert_eq!(min, Vec2::new(103.0, 3.0));
+        assert_eq!(max, Vec2::new(147.0, 27.0));
     }
 
     #[test]

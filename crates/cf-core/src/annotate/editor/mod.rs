@@ -1,12 +1,16 @@
 //! How pointer and keyboard input change the document: the active tool, the style for new
 //! annotations, the selection, and gestures in progress.
 
+mod grow;
+
+use self::grow::extend;
+use super::area::Area;
 use super::document::{Document, Edit};
 use super::hit;
-use super::shape::{Annotation, Shape, Style, Vec2};
+use super::shape::{Annotation, Rgba, Shape, Style, Vec2};
 
-/// Pen points closer than this to the previous one are skipped.
-const PEN_MIN_STEP: f32 = 1.0;
+/// Crops smaller than this (a click) are ignored.
+const MIN_CROP: f32 = 8.0;
 
 /// The active editor tool.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -28,11 +32,27 @@ pub enum Tool {
     Text,
     /// Numbered step badge.
     Step,
+    /// Highlighter (has its own style, yellow by default).
+    Highlighter,
+    /// Blur a region.
+    Blur,
+    /// Pixelate a region (solid box when the style is filled).
+    Redact,
+    /// Cut a hole in the spotlight dim layer.
+    Spotlight,
+    /// Magnified inset of a region.
+    Magnify,
+    /// Crop the image.
+    Crop,
 }
 
 #[derive(Debug, Clone)]
 enum Gesture {
     Drawing(Shape),
+    Cropping {
+        from: Vec2,
+        to: Vec2,
+    },
     Moving {
         index: usize,
         grab: Vec2,
@@ -63,20 +83,55 @@ pub struct Preview {
 }
 
 /// The editor's input state over a [`Document`].
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EditorState {
     doc: Document,
     tool: Tool,
     style: Style,
+    /// The highlighter's own style.
+    marker: Style,
+    /// Image size (crops are clamped to it; zero = unknown).
+    canvas: Vec2,
     gesture: Option<Gesture>,
     selected: Option<usize>,
     draft: Option<TextDraft>,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            doc: Document::default(),
+            tool: Tool::default(),
+            style: Style::default(),
+            marker: Style {
+                color: Rgba::new(0xFD, 0xD8, 0x35, 0xFF),
+                ..Style::default()
+            },
+            canvas: Vec2::default(),
+            gesture: None,
+            selected: None,
+            draft: None,
+        }
+    }
 }
 
 impl EditorState {
     /// An empty document with the default tool and style.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty document over an image of `width × height` pixels.
+    pub fn with_canvas(width: f32, height: f32) -> Self {
+        Self {
+            canvas: Vec2::new(width, height),
+            ..Self::default()
+        }
+    }
+
+    /// The image size given to [`Self::with_canvas`].
+    pub const fn canvas(&self) -> Vec2 {
+        self.canvas
     }
 
     /// The document.
@@ -89,9 +144,21 @@ impl EditorState {
         self.tool
     }
 
-    /// The style used for new annotations.
-    pub const fn style(&self) -> Style {
-        self.style
+    /// The style used for new annotations (the highlighter keeps its own).
+    pub fn style(&self) -> Style {
+        if self.tool == Tool::Highlighter {
+            self.marker
+        } else {
+            self.style
+        }
+    }
+
+    /// The crop to show: the one being dragged, else the document's.
+    pub fn crop_preview(&self) -> Option<Area> {
+        match &self.gesture {
+            Some(Gesture::Cropping { from, to }) => Some(self.crop_area(*from, *to)),
+            _ => self.doc.crop(),
+        }
     }
 
     /// The selected annotation (select tool).
@@ -117,6 +184,10 @@ impl EditorState {
     /// Changes the style for new annotations, and restyles the selection or the text being
     /// typed.
     pub fn set_style(&mut self, style: Style) {
+        if self.tool == Tool::Highlighter {
+            self.marker = style;
+            return;
+        }
         self.style = style;
         if let Some(draft) = &mut self.draft {
             draft.style = style;
@@ -148,18 +219,26 @@ impl EditorState {
                 shape: Shape::Step { at: p },
                 style: self.style,
             }),
-            Tool::Pen => self.gesture = Some(Gesture::Drawing(Shape::Pen(vec![p]))),
+            Tool::Pen => self.start_drawing(Shape::Pen(vec![p])),
+            Tool::Highlighter => self.start_drawing(Shape::Highlight(vec![p])),
             Tool::Line => self.start_drawing(Shape::Line { from: p, to: p }),
             Tool::Arrow => self.start_drawing(Shape::Arrow { from: p, to: p }),
             Tool::Rect => self.start_drawing(Shape::Rect { a: p, b: p }),
             Tool::Ellipse => self.start_drawing(Shape::Ellipse { a: p, b: p }),
+            Tool::Blur => self.start_drawing(Shape::Blur { a: p, b: p }),
+            Tool::Redact => self.start_drawing(Shape::Redact { a: p, b: p }),
+            Tool::Spotlight => self.start_drawing(Shape::Spotlight { a: p, b: p }),
+            Tool::Magnify => self.start_drawing(Shape::Magnify { a: p, b: p, at: p }),
+            Tool::Crop => self.gesture = Some(Gesture::Cropping { from: p, to: p }),
         }
     }
 
     /// Pointer moved to `p` (with the button held or not).
     pub fn pointer_move(&mut self, p: Vec2) {
+        let canvas = self.canvas;
         match &mut self.gesture {
-            Some(Gesture::Drawing(shape)) => extend(shape, p),
+            Some(Gesture::Drawing(shape)) => extend(shape, p, canvas),
+            Some(Gesture::Cropping { to, .. }) => *to = p,
             Some(Gesture::Moving {
                 grab,
                 before,
@@ -181,9 +260,10 @@ impl EditorState {
             Some(Gesture::Drawing(shape)) if !shape.is_degenerate() => {
                 self.insert(Annotation {
                     shape,
-                    style: self.style,
+                    style: self.style(),
                 });
             }
+            Some(Gesture::Cropping { from, to }) => self.finish_crop(from, to),
             Some(Gesture::Moving {
                 index,
                 before,
@@ -259,8 +339,12 @@ impl EditorState {
         }
     }
 
-    /// Deletes the selected annotation.
+    /// Deletes the selected annotation; with the crop tool, removes the crop.
     pub fn delete_selected(&mut self) {
+        if self.tool == Tool::Crop {
+            self.set_crop(None);
+            return;
+        }
         let Some(index) = self.selected.take() else {
             return;
         };
@@ -305,10 +389,11 @@ impl EditorState {
                 replaces: None,
                 item: Annotation {
                     shape: shape.clone(),
-                    style: self.style,
+                    style: self.style(),
                 },
                 typing: false,
             }),
+            Gesture::Cropping { .. } => None,
             Gesture::Moving { index, current, .. } => Some(Preview {
                 replaces: Some(*index),
                 item: current.clone(),
@@ -365,138 +450,37 @@ impl EditorState {
         let index = self.doc.items().len();
         self.doc.apply(Edit::Insert { index, item });
     }
-}
 
-fn extend(shape: &mut Shape, p: Vec2) {
-    match shape {
-        Shape::Pen(points) => {
-            if points
-                .last()
-                .is_none_or(|last| p.minus(*last).length() >= PEN_MIN_STEP)
-            {
-                points.push(p);
-            }
+    /// The crop dragged from `from` to `to`, inside the image and on whole pixels.
+    fn crop_area(&self, from: Vec2, to: Vec2) -> Area {
+        let area = Area::from_corners(from, to);
+        let area = if self.canvas.x > 0.0 {
+            area.clamp_to(self.canvas)
+        } else {
+            area
+        };
+        area.round()
+    }
+
+    fn finish_crop(&mut self, from: Vec2, to: Vec2) {
+        let area = self.crop_area(from, to);
+        if area.width() < MIN_CROP || area.height() < MIN_CROP {
+            return;
         }
-        Shape::Line { to, .. } | Shape::Arrow { to, .. } => *to = p,
-        Shape::Rect { b, .. } | Shape::Ellipse { b, .. } => *b = p,
-        Shape::Text { .. } | Shape::Step { .. } => {}
+        let whole = Area::from_corners(Vec2::default(), self.canvas);
+        self.set_crop((area != whole).then_some(area));
+    }
+
+    fn set_crop(&mut self, crop: Option<Area>) {
+        let before = self.doc.crop();
+        if before != crop {
+            self.doc.apply(Edit::Crop {
+                before,
+                after: crop,
+            });
+        }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn v(x: f32, y: f32) -> Vec2 {
-        Vec2::new(x, y)
-    }
-
-    fn drag(state: &mut EditorState, from: Vec2, to: Vec2) {
-        state.pointer_down(from, 1.0);
-        state.pointer_move(v(f32::midpoint(from.x, to.x), f32::midpoint(from.y, to.y)));
-        state.pointer_up(to);
-    }
-
-    #[test]
-    fn drawing_a_rect_is_one_undoable_edit() {
-        let mut s = EditorState::new();
-        s.set_tool(Tool::Rect);
-        drag(&mut s, v(10.0, 10.0), v(50.0, 40.0));
-        assert_eq!(s.document().items().len(), 1);
-        assert!(s.preview().is_none());
-        assert!(s.undo());
-        assert!(s.document().items().is_empty());
-    }
-
-    #[test]
-    fn a_click_with_a_drawing_tool_adds_nothing() {
-        let mut s = EditorState::new();
-        s.set_tool(Tool::Arrow);
-        drag(&mut s, v(10.0, 10.0), v(10.0, 10.0));
-        assert!(s.document().items().is_empty());
-    }
-
-    #[test]
-    fn pen_collects_points_and_previews_while_drawing() {
-        let mut s = EditorState::new();
-        s.pointer_down(v(0.0, 0.0), 1.0);
-        s.pointer_move(v(0.5, 0.0)); // too close: skipped
-        s.pointer_move(v(5.0, 0.0));
-        let preview = s.preview().map(|p| p.item.shape);
-        assert_eq!(preview, Some(Shape::Pen(vec![v(0.0, 0.0), v(5.0, 0.0)])));
-        s.pointer_up(v(9.0, 0.0));
-        assert_eq!(s.document().items().len(), 1);
-    }
-
-    #[test]
-    fn select_tool_moves_and_deletes() {
-        let mut s = EditorState::new();
-        s.set_tool(Tool::Line);
-        drag(&mut s, v(0.0, 0.0), v(100.0, 0.0));
-        s.set_tool(Tool::Select);
-        drag(&mut s, v(50.0, 1.0), v(50.0, 21.0));
-        assert_eq!(s.selected(), Some(0));
-        let moved = &s.document().items()[0].shape;
-        assert_eq!(
-            moved,
-            &Shape::Line {
-                from: v(0.0, 20.0),
-                to: v(100.0, 20.0)
-            }
-        );
-        s.delete_selected();
-        assert!(s.document().items().is_empty());
-        assert!(s.undo());
-        assert_eq!(s.document().items().len(), 1);
-    }
-
-    #[test]
-    fn restyling_the_selection_is_undoable() {
-        let mut s = EditorState::new();
-        s.set_tool(Tool::Step);
-        s.pointer_down(v(10.0, 10.0), 1.0);
-        s.set_tool(Tool::Select);
-        s.pointer_down(v(10.0, 10.0), 1.0);
-        s.pointer_up(v(10.0, 10.0));
-        let wide = Style {
-            width: 8.0,
-            ..s.style()
-        };
-        s.set_style(wide);
-        assert!((s.document().items()[0].style.width - 8.0).abs() < f32::EPSILON);
-        s.undo();
-        assert!((s.document().items()[0].style.width - 4.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn text_is_typed_committed_and_re_edited() {
-        let mut s = EditorState::new();
-        s.set_tool(Tool::Text);
-        s.pointer_down(v(10.0, 10.0), 1.0);
-        s.type_text("Hi");
-        s.new_line();
-        s.type_text("there\u{8}");
-        assert!(s.preview().is_some_and(|p| p.typing));
-        assert!(s.escape());
-        let text = |s: &EditorState| match &s.document().items()[0].shape {
-            Shape::Text { text, .. } => text.clone(),
-            _ => String::new(),
-        };
-        assert_eq!(text(&s), "Hi\nthere");
-        s.pointer_down(v(12.0, 12.0), 1.0); // click on it: edit
-        s.backspace();
-        s.commit_text();
-        assert_eq!(text(&s), "Hi\nther");
-        assert_eq!(s.document().items().len(), 1);
-    }
-
-    #[test]
-    fn empty_text_is_dropped_and_escape_reports_nothing_to_do() {
-        let mut s = EditorState::new();
-        s.set_tool(Tool::Text);
-        s.pointer_down(v(10.0, 10.0), 1.0);
-        assert!(s.escape());
-        assert!(s.document().items().is_empty());
-        assert!(!s.escape());
-    }
-}
+mod tests;

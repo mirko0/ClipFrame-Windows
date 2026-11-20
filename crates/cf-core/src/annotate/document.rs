@@ -1,6 +1,7 @@
 //! The annotation list and its undo/redo history. Every change is an [`Edit`], so undo is
 //! unlimited and exact.
 
+use super::area::Area;
 use super::shape::{Annotation, Shape};
 
 /// One reversible change to the annotation list.
@@ -29,6 +30,13 @@ pub enum Edit {
         /// New value.
         after: Annotation,
     },
+    /// Change the crop (`None` = the whole image).
+    Crop {
+        /// Previous crop.
+        before: Option<Area>,
+        /// New crop.
+        after: Option<Area>,
+    },
 }
 
 impl Edit {
@@ -47,14 +55,20 @@ impl Edit {
                 before: after,
                 after: before,
             },
+            Self::Crop { before, after } => Self::Crop {
+                before: after,
+                after: before,
+            },
         }
     }
 }
 
-/// Annotations over an image of `width × height` pixels, bottom-most first.
+/// Annotations over an image, bottom-most first, plus an optional crop. Annotations keep
+/// full-image coordinates; the crop only limits what is shown and exported.
 #[derive(Debug, Clone, Default)]
 pub struct Document {
     items: Vec<Annotation>,
+    crop: Option<Area>,
     undo: Vec<Edit>,
     redo: Vec<Edit>,
     /// Bumped on every change, so callers can tell when to re-export.
@@ -70,6 +84,11 @@ impl Document {
     /// The annotations, bottom-most first.
     pub fn items(&self) -> &[Annotation] {
         &self.items
+    }
+
+    /// The crop, if any (whole pixels inside the image).
+    pub const fn crop(&self) -> Option<Area> {
+        self.crop
     }
 
     /// Changes whenever the content changes (including undo and redo).
@@ -134,6 +153,10 @@ impl Document {
             }
             Edit::Replace { index, after, .. } if index < self.items.len() => {
                 self.items[index] = after;
+                true
+            }
+            Edit::Crop { after, .. } => {
+                self.crop = after;
                 true
             }
             _ => false,
@@ -205,6 +228,21 @@ mod tests {
         });
         assert_eq!(doc.step_number(1), 2);
         assert_eq!(doc.next_step_number(), 3);
+    }
+
+    #[test]
+    fn crop_is_undoable() {
+        let mut doc = Document::new();
+        let area = Area::from_corners(Vec2::new(1.0, 2.0), Vec2::new(30.0, 40.0));
+        doc.apply(Edit::Crop {
+            before: None,
+            after: Some(area),
+        });
+        assert_eq!(doc.crop(), Some(area));
+        assert!(doc.undo());
+        assert_eq!(doc.crop(), None);
+        assert!(doc.redo());
+        assert_eq!(doc.crop(), Some(area));
     }
 
     #[test]

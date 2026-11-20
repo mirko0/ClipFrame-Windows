@@ -164,13 +164,24 @@ pub struct EditorConfig {
     /// Open the editor after every interactive capture (the capture is still saved and
     /// copied immediately).
     pub open_after_capture: bool,
+    /// How dark the spotlight layer makes everything outside its holes, in percent
+    /// (clamped to 10–90).
+    pub spotlight_dim: u8,
 }
 
 impl Default for EditorConfig {
     fn default() -> Self {
         Self {
             open_after_capture: true,
+            spotlight_dim: 55,
         }
+    }
+}
+
+impl EditorConfig {
+    /// The spotlight dim as an opacity in `0.1..=0.9`.
+    pub fn spotlight_opacity(&self) -> f32 {
+        f32::from(self.spotlight_dim.clamp(10, 90)) / 100.0
     }
 }
 

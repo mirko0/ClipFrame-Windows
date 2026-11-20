@@ -89,8 +89,11 @@ impl Canvas<'_> {
     }
 
     /// Connected line segments through `points` (a single stroke, so translucent
-    /// self-overlaps don't darken).
+    /// self-overlaps don't darken). A single point draws a dot.
     pub fn stroke_polyline(&self, points: &[(f32, f32)], stroke: &Stroke) {
+        if let [point] = points {
+            return self.stroke_line(*point, *point, stroke);
+        }
         let Some(path) = self.path(points, false) else {
             return;
         };
@@ -162,8 +165,13 @@ impl Canvas<'_> {
         }
     }
 
+    /// A path through `points`; `None` for fewer than two (Direct2D must not be handed an
+    /// empty `AddLines` slice — it reads through the pointer and crashes).
     fn path(&self, points: &[(f32, f32)], closed: bool) -> Option<ID2D1PathGeometry> {
         let (first, rest) = points.split_first()?;
+        if rest.is_empty() {
+            return None;
+        }
         let rest: Vec<Vector2> = rest.iter().copied().map(vector).collect();
         let (begin, end) = if closed {
             (D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED)

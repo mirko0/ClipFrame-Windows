@@ -12,6 +12,7 @@ use windows::Win32::Graphics::DirectWrite::{
 use crate::kit::Kit;
 use crate::{Gpu, GpuImage};
 
+mod effects;
 mod shapes;
 
 pub use shapes::{LineDash, Stroke};

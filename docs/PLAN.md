@@ -168,9 +168,38 @@ All edits go through command objects → unlimited undo/redo.
   editor opens (`editor.open_after_capture`, default on). Edits re-copy after 300 ms
   (`clipboard.update_on_edit`); Ctrl+C copies, Ctrl+S saves a new file (then overwrites it).
 - Keys: V select · P pen · L line · A arrow · R rect · E ellipse · T text · N step ·
-  1–8 colour · [ ] thickness · D dash · F fill · O opacity · Ctrl+Z/Y · Delete · Esc.
+  1–8 colour · [ ] thickness · D dash · F fill · O opacity · Ctrl+Z/Y · Delete · Esc
+  (M4 tools below).
 - Not yet: resize handles on annotations, curved arrows, corner radius, zoom/pan beyond
   fit-to-window, eyedropper, saved styles (later milestones).
+
+### Implementation (M4)
+
+- New items: `Highlight`, `Blur`, `Redact` (pixelate; a solid box when the style is filled),
+  `Spotlight` (a hole), `Magnify` (source rect + inset at 2×, placed beside the source and
+  kept inside the image; moving it moves only the inset). The crop is a document property
+  (`Edit::Crop`, undoable); annotations keep full-image coordinates and the crop only limits
+  the view and the export. With the crop tool active the whole image is shown with the
+  outside dimmed; Delete removes the crop.
+- Rendering layers, bottom to top: image → region effects → the one spotlight dim layer →
+  everything else (magnify insets stay bright).
+  - Blur: Direct2D Gaussian blur effect over the captured image, clipped to the region.
+  - Pixelate: Scale effect down (high-quality cubic) then up (nearest neighbour), so blocks
+    align with the image origin. If an effect fails to render, the region is filled solid,
+    so a redaction can never show the original pixels.
+  - Spotlight: one geometry = image rect *excluding* the winding-mode union of all holes,
+    filled once — overlapping holes never double-brighten. Dim strength is
+    `editor.spotlight_dim` (percent, default 55).
+  - Highlighter: `D2D1_PRIMITIVE_BLEND_MIN` — each channel becomes the darker of ink and
+    background, so black text stays black and overlapping strokes don't stack. It keeps its
+    own style (yellow by default).
+- Keys: H highlighter · X pixelate/redact · B blur · S spotlight · M magnify · C crop.
+  Thickness is one cycling toolbar button (`[` `]` still step it); it also sets blur
+  strength, pixel size and highlighter width.
+- Fixed in M4: a one-point pen/highlighter stroke (the first mouse-down) handed Direct2D an
+  empty `AddLines` slice and crashed the helper; single points now draw a dot.
+- Not yet: elliptical spotlights and edge feather, padding/border/background, a straight
+  highlighter (Shift), a connector line for magnify insets.
 
 ### Spotlight: one global dim layer
 
@@ -244,7 +273,7 @@ All edits go through command objects → unlimited undo/redo.
 | M1 ✅ | Capture | Frozen multi-monitor overlay, free/rect/monitor modes, loupe, save + clipboard |
 | M2 ✅ | Window & element modes | EnumWindows snapshot, UIA element hit-testing, browser content area |
 | M3 ✅ | Editor core | Document model, undo/redo, pen/line/arrow/shapes/text, Direct2D rendering, export |
-| M4 | Effects | Pixelate/redact, blur, highlighter, global spotlight layer, magnify inset, crop |
+| M4 ✅ | Effects | Pixelate/redact, blur, highlighter, global spotlight layer, magnify inset, crop |
 | M5 | Smart | OCR copy, QR/barcode chips, auto-redact suggestions |
 | M6 | Workflow | Toasts, pin to screen, history, drag-out, filename templates |
 | M7 | Ship | Velopack installer, onboarding, auto-update, performance pass vs budgets |

@@ -2,6 +2,7 @@
 //! with the helper's GPU device).
 
 mod command;
+mod icons;
 mod render;
 mod set;
 mod toolbar;
@@ -11,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use cf_core::annotate::{EditorState, Tool, Vec2};
+use cf_core::annotate::{Area, EditorState, Tool, Vec2};
 use cf_core::geometry::Rect;
 use cf_core::image::Image;
 use cf_core::output;
@@ -49,6 +50,8 @@ pub struct EditorOptions {
     pub save_dir: PathBuf,
     /// Used when saving into `save_dir` fails.
     pub fallback_dir: PathBuf,
+    /// Opacity of the spotlight dim layer.
+    pub spotlight_dim: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +106,13 @@ impl Editor {
         let surface =
             WindowSurface::new(gpu, &window, (size.width, size.height), UI_TEXT_PX * scale)?;
         let base = GpuImage::upload(gpu, image)?;
+        #[allow(clippy::cast_precision_loss)] // image sizes
+        let state = EditorState::with_canvas(image.width() as f32, image.height() as f32);
         let editor = Self {
             surface,
             base,
             window,
-            state: EditorState::new(),
+            state,
             options,
             input: Input::default(),
             copy_due: None,
@@ -292,13 +297,15 @@ impl Editor {
     /// Renders the edited image and hands it to a background thread.
     fn export(&mut self, gpu: &Gpu, copy: bool, save_to: Option<PathBuf>) {
         self.state.commit_text();
-        let size = (self.base.width(), self.base.height());
         let doc = self.state.document();
+        let area = doc.crop().unwrap_or_else(|| self.whole());
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // whole pixels
+        let size = (area.width() as u32, area.height() as u32);
+        let backdrop = self.backdrop();
         let flattened = cf_render::render_to_image(gpu, size, |canvas| {
-            #[allow(clippy::cast_precision_loss)] // image sizes
-            let full = RectF::new(0.0, 0.0, size.0 as f32, size.1 as f32);
-            canvas.draw_image(&self.base, full, None, false);
-            render::document(canvas, doc, None);
+            canvas.set_transform(1.0, (-area.min.x, -area.min.y));
+            canvas.draw_image(&self.base, rect_of(self.whole()), None, false);
+            render::document(canvas, &backdrop, doc, None);
         });
         match flattened {
             Ok(image) => {
@@ -323,14 +330,20 @@ impl Editor {
     fn paint(&self, canvas: &Canvas<'_>) {
         canvas.clear(Color::rgba8(0x1B, 0x1B, 0x20, 0xFF));
         let view = self.view();
-        let (w, h) = (self.base.width(), self.base.height());
-        #[allow(clippy::cast_precision_loss)] // image sizes
-        let image = RectF::new(0.0, 0.0, w as f32, h as f32);
+        let image = rect_of(self.whole());
         canvas.set_transform(view.zoom, view.offset);
-        canvas.push_clip(image);
+        canvas.push_clip(rect_of(self.shown()));
         canvas.draw_image(&self.base, image, None, view.zoom < 1.0);
         let preview = self.state.preview();
-        render::document(canvas, self.state.document(), preview.as_ref());
+        render::document(
+            canvas,
+            &self.backdrop(),
+            self.state.document(),
+            preview.as_ref(),
+        );
+        if let Some(crop) = self.state.crop_preview().filter(|_| self.cropping()) {
+            render::crop_overlay(canvas, image, crop, view.zoom);
+        }
         if let Some(item) = self
             .state
             .selected()
@@ -349,24 +362,47 @@ impl Editor {
         toolbar::paint(canvas, &self.buttons(), &look);
     }
 
+    /// Fits the shown part of the image (the crop, or all of it while cropping) into the
+    /// window below the toolbar.
     fn view(&self) -> View {
         let s = self.scale();
         let (win_w, win_h) = self.surface.size();
         let margin = window::MARGIN * s;
         let top = toolbar::HEIGHT * s + margin;
-        #[allow(clippy::cast_precision_loss)] // window and image sizes
-        let (area_w, area_h, img_w, img_h) = (
-            win_w as f32 - 2.0 * margin,
-            win_h as f32 - top - margin,
-            self.base.width() as f32,
-            self.base.height() as f32,
-        );
+        let shown = self.shown();
+        #[allow(clippy::cast_precision_loss)] // window sizes
+        let (area_w, area_h) = (win_w as f32 - 2.0 * margin, win_h as f32 - top - margin);
+        let (img_w, img_h) = (shown.width().max(1.0), shown.height().max(1.0));
         let zoom = (area_w / img_w).min(area_h / img_h).clamp(0.05, 1.0);
         let offset = (
-            margin + (area_w - img_w * zoom).max(0.0) / 2.0,
-            top + (area_h - img_h * zoom).max(0.0) / 2.0,
+            margin + (area_w - img_w * zoom).max(0.0) / 2.0 - shown.min.x * zoom,
+            top + (area_h - img_h * zoom).max(0.0) / 2.0 - shown.min.y * zoom,
         );
         View { zoom, offset }
+    }
+
+    /// The part of the image on screen.
+    fn shown(&self) -> Area {
+        if self.cropping() {
+            return self.whole();
+        }
+        self.state.document().crop().unwrap_or_else(|| self.whole())
+    }
+
+    fn whole(&self) -> Area {
+        let size = self.state.canvas();
+        Area::from_corners(Vec2::default(), size)
+    }
+
+    fn cropping(&self) -> bool {
+        self.state.tool() == Tool::Crop
+    }
+
+    fn backdrop(&self) -> render::Backdrop<'_> {
+        render::Backdrop {
+            base: &self.base,
+            dim: self.options.spotlight_dim,
+        }
     }
 
     fn to_image(&self, p: (f32, f32)) -> Vec2 {
@@ -392,4 +428,8 @@ impl Editor {
             _ => CursorIcon::Crosshair,
         }
     }
+}
+
+fn rect_of(area: Area) -> RectF {
+    RectF::new(area.min.x, area.min.y, area.width(), area.height())
 }

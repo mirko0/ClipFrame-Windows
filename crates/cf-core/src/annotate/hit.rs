@@ -18,12 +18,25 @@ fn hits(item: &Annotation, p: Vec2, slop: f32) -> bool {
         Shape::Pen(points) => points
             .windows(2)
             .any(|w| segment_distance(p, w[0], w[1]) <= reach),
+        Shape::Highlight(points) => {
+            let reach = item.style.highlight_width() / 2.0 + slop;
+            points
+                .windows(2)
+                .any(|w| segment_distance(p, w[0], w[1]) <= reach)
+        }
         Shape::Line { from, to } | Shape::Arrow { from, to } => {
             segment_distance(p, *from, *to) <= reach
         }
         Shape::Rect { a, b } if !item.style.filled => rect_outline_hit(p, *a, *b, reach),
         Shape::Ellipse { a, b } if !item.style.filled => ellipse_outline_hit(p, *a, *b, reach),
-        Shape::Rect { .. } | Shape::Ellipse { .. } | Shape::Text { .. } | Shape::Step { .. } => {
+        Shape::Rect { .. }
+        | Shape::Ellipse { .. }
+        | Shape::Text { .. }
+        | Shape::Step { .. }
+        | Shape::Blur { .. }
+        | Shape::Redact { .. }
+        | Shape::Spotlight { .. }
+        | Shape::Magnify { .. } => {
             let (min, max) = item.bounds();
             p.x >= min.x - slop && p.x <= max.x + slop && p.y >= min.y - slop && p.y <= max.y + slop
         }

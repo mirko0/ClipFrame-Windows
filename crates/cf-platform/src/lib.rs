@@ -24,3 +24,7 @@ pub mod screen_capture;
 pub mod single_instance;
 #[cfg(windows)]
 pub mod time;
+#[cfg(windows)]
+pub mod ui_automation;
+#[cfg(windows)]
+pub mod window_list;

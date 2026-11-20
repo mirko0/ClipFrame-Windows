@@ -1,7 +1,10 @@
 //! The capture overlay: frozen monitors, selection input, and the outcome of a capture.
 
+mod hints;
 mod keys;
 mod paint;
+mod picker;
+mod targets;
 mod window;
 
 use std::time::{Duration, Instant};
@@ -12,14 +15,17 @@ use cf_core::image::Frame;
 use cf_core::selection::{DragModifiers, Handle, Hit, Selection};
 use cf_render::Gpu;
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::ModifiersState;
 use winit::window::{CursorIcon, WindowId};
 
 use self::keys::Command;
 use self::paint::{LOUPE_PIXELS, Scene, Target};
+pub use self::picker::Waker;
+use self::targets::Targets;
 use self::window::OverlayWindow;
+use super::frozen::FrozenDesktop;
 
 /// Handle grab tolerance in points.
 const GRAB_POINTS: f32 = 6.0;
@@ -27,12 +33,6 @@ const GRAB_POINTS: f32 = 6.0;
 const DAMAGE_MARGIN: i32 = 64;
 const LOUPE_DAMAGE: i32 = LOUPE_PIXELS * 24 + 160;
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
-
-const HINT_DRAG: &str = "Drag to select · Esc cancel · F free · R rectangle · M monitor · A all monitors · Ctrl+C copy colour";
-const HINT_ADJUST: &str =
-    "Enter or double-click to capture · arrows move · Ctrl+arrows resize · Esc cancel";
-const HINT_MONITOR: &str =
-    "Click a monitor to capture it · F free select · A all monitors · Esc cancel";
 
 /// What the overlay decided after an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +59,9 @@ pub struct Overlay {
     modifiers: ModifiersState,
     reposition: bool,
     last_click: Option<Instant>,
+    targets: Targets,
+    /// What a click would pick (snapping modes), shown while nothing is selected.
+    candidate: Option<Rect>,
 }
 
 impl Overlay {
@@ -66,10 +69,15 @@ impl Overlay {
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
-        frames: Vec<Frame>,
-        bounds: Rect,
+        desktop: FrozenDesktop,
         options: OverlayOptions,
+        waker: Waker,
     ) -> anyhow::Result<Self> {
+        let FrozenDesktop {
+            frames,
+            bounds,
+            windows: snapshot,
+        } = desktop;
         let windows = frames
             .iter()
             .map(|f| OverlayWindow::create(event_loop, gpu, f.rect, &f.image))
@@ -84,8 +92,11 @@ impl Overlay {
             modifiers: ModifiersState::empty(),
             reposition: false,
             last_click: None,
+            targets: Targets::new(snapshot, waker),
+            candidate: None,
         };
         overlay.follow_monitor_under_pointer();
+        overlay.update_candidate();
         for index in 0..overlay.windows.len() {
             overlay.render(gpu, index);
         }
@@ -115,6 +126,7 @@ impl Overlay {
             WindowEvent::MouseInput { state, button, .. } => {
                 return self.on_button(index, state, button);
             }
+            WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
             WindowEvent::KeyboardInput { event, .. } => {
                 if let Some(command) = keys::command_for(&event, self.modifiers) {
                     return self.on_command(command);
@@ -155,22 +167,30 @@ impl Overlay {
         let dragging_new = self.selection.is_dragging() || self.selection.rect().is_none();
         let adjusting =
             self.options.confirm_with_enter && self.selection.rect().is_some() && !dragging_new;
-        let monitor_mode = self.options.mode == CaptureMode::Monitor;
-        let hint = match (monitor_mode, adjusting, self.selection.is_dragging()) {
-            (true, ..) => HINT_MONITOR,
-            (_, true, _) => HINT_ADJUST,
-            (_, _, true) => "",
-            _ => HINT_DRAG,
-        };
+        let mode = self.options.mode;
+        let free = matches!(mode, CaptureMode::FreeSelect | CaptureMode::Rectangle);
         Scene {
-            selection: self.selection.rect(),
+            selection: self.shown_rect(),
             show_handles: adjusting,
             pointer: self.pointer,
-            show_loupe: !monitor_mode && dragging_new,
+            show_loupe: free && dragging_new,
             pointer_color: self
                 .pointer
                 .and_then(|p| self.frames.iter().find_map(|f| f.pixel_at(p))),
-            hint,
+            hint: hints::hint(mode, adjusting, self.selection.is_dragging()),
+        }
+    }
+
+    /// The selection, or else what a click would pick.
+    fn shown_rect(&self) -> Option<Rect> {
+        let idle = !self.selection.is_dragging() || self.selection.rect().is_none();
+        self.selection.rect().or(self.candidate.filter(|_| idle))
+    }
+
+    /// Applies finished element/document lookups from the picker thread.
+    pub fn on_targets_ready(&mut self) {
+        if self.targets.poll() {
+            self.refresh_candidate();
         }
     }
 
@@ -189,8 +209,22 @@ impl Overlay {
             self.selection.pointer_move(p, self.drag_modifiers());
         }
         self.follow_monitor_under_pointer();
+        if !self.selection.is_dragging() {
+            self.targets.hover(self.options.mode, p);
+            self.update_candidate();
+        }
         self.update_cursor_icon(index, p);
         self.invalidate(before.union(self.damage()));
+    }
+
+    fn on_wheel(&mut self, delta: MouseScrollDelta) {
+        let up = match delta {
+            MouseScrollDelta::LineDelta(_, y) => y > 0.0,
+            MouseScrollDelta::PixelDelta(d) => d.y > 0.0,
+        };
+        if self.options.mode == CaptureMode::Element && self.targets.walk(up) {
+            self.refresh_candidate();
+        }
     }
 
     fn on_button(&mut self, index: usize, state: ElementState, button: MouseButton) -> Outcome {
@@ -225,8 +259,26 @@ impl Overlay {
         {
             return Outcome::Capture(rect);
         }
-        self.selection.pointer_down(p, self.grab_px(index));
+        let grab = self.grab_px(index);
+        let on_selection = self.selection.hit_test(p, grab) != Hit::Outside;
+        if is_pick_mode(self.options.mode) && !on_selection {
+            return self.pick();
+        }
+        self.selection.pointer_down(p, grab);
         Outcome::Continue
+    }
+
+    /// Selects (or, without Enter confirmation, captures) the current candidate.
+    fn pick(&mut self) -> Outcome {
+        let Some(rect) = self.candidate.and_then(|r| r.intersect(self.bounds)) else {
+            return Outcome::Continue;
+        };
+        if self.options.confirm_with_enter {
+            self.selection.set(rect);
+            Outcome::Continue
+        } else {
+            Outcome::Capture(rect)
+        }
     }
 
     fn on_left_up(&mut self, p: Point) -> Outcome {
@@ -235,6 +287,8 @@ impl Overlay {
         }
         match self.selection.pointer_up(p, self.drag_modifiers()) {
             Some(rect) if !self.options.confirm_with_enter => Outcome::Capture(rect),
+            // A click without dragging snaps to the window under the pointer.
+            None if self.options.mode == CaptureMode::FreeSelect => self.pick(),
             _ => Outcome::Continue,
         }
     }
@@ -243,6 +297,7 @@ impl Overlay {
         let has_selection = self.selection.rect().is_some() || self.selection.is_dragging();
         if has_selection && self.options.mode != CaptureMode::Monitor {
             self.selection.clear();
+            self.update_candidate();
             Outcome::Continue
         } else {
             Outcome::Cancel
@@ -282,6 +337,10 @@ impl Overlay {
         self.options.mode = mode;
         self.selection.clear();
         self.follow_monitor_under_pointer();
+        if let Some(p) = self.pointer {
+            self.targets.hover(mode, p);
+        }
+        self.update_candidate();
         self.invalidate(self.bounds);
         Outcome::Continue
     }
@@ -313,16 +372,38 @@ impl Overlay {
         }
     }
 
+    fn update_candidate(&mut self) {
+        let mode = self.options.mode;
+        self.candidate = self.pointer.filter(|_| Targets::snaps(mode)).and_then(|p| {
+            self.targets
+                .candidate(mode, p)
+                .or_else(|| self.window_at(Some(p)).map(|w| w.monitor))
+        });
+    }
+
+    /// Recomputes the candidate after a lookup or scroll, repainting what changed.
+    fn refresh_candidate(&mut self) {
+        let before = self.damage();
+        self.update_candidate();
+        self.invalidate(before.union(self.damage()));
+    }
+
     fn update_cursor_icon(&self, index: usize, p: Point) {
-        let icon = if self.options.mode == CaptureMode::Monitor {
+        let mode = self.options.mode;
+        let idle = if is_pick_mode(mode) {
+            CursorIcon::Pointer
+        } else {
+            CursorIcon::Crosshair
+        };
+        let icon = if mode == CaptureMode::Monitor {
             CursorIcon::Pointer
         } else if self.selection.is_dragging() || !self.options.confirm_with_enter {
-            CursorIcon::Crosshair
+            idle
         } else {
             match self.selection.hit_test(p, self.grab_px(index)) {
                 Hit::Handle(handle) => resize_icon(handle),
                 Hit::Inside => CursorIcon::Move,
-                Hit::Outside => CursorIcon::Crosshair,
+                Hit::Outside => idle,
             }
         };
         self.windows[index].window.set_cursor(icon);
@@ -348,7 +429,7 @@ impl Overlay {
 
     /// The area whose appearance depends on the current state.
     fn damage(&self) -> Rect {
-        let selection = self.selection.rect().map(|r| inflate(r, DAMAGE_MARGIN));
+        let selection = self.shown_rect().map(|r| inflate(r, DAMAGE_MARGIN));
         let loupe = self
             .pointer
             .map(|p| inflate(Rect::new(p.x, p.y, 1, 1), LOUPE_DAMAGE));
@@ -370,6 +451,14 @@ impl Overlay {
             w.window.request_redraw();
         }
     }
+}
+
+/// Modes where a click picks something instead of starting a drag.
+const fn is_pick_mode(mode: CaptureMode) -> bool {
+    matches!(
+        mode,
+        CaptureMode::Window | CaptureMode::Element | CaptureMode::BrowserContent
+    )
 }
 
 fn inflate(r: Rect, by: i32) -> Rect {

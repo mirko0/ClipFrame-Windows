@@ -5,6 +5,7 @@
 //! serves requests while the user is capturing, stays for the "Keep GPU ready" period so the
 //! next capture is fast, then exits — returning all of that memory to the system.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Context as _;
@@ -19,7 +20,7 @@ use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::WindowId;
 
-use crate::capture::{CaptureController, Delivery};
+use crate::capture::{CaptureController, Delivery, Waker};
 use crate::settings;
 
 /// Command-line flag that starts the helper instead of the tray.
@@ -29,6 +30,8 @@ const INSTANCE_NAME: &str = r"Local\ClipFrame.CaptureHelper";
 #[derive(Debug)]
 enum HelperEvent {
     Request(CaptureRequest),
+    /// A background lookup for the overlay finished.
+    Wake,
 }
 
 pub fn run(paths: AppPaths, initial: CaptureRequest) -> anyhow::Result<()> {
@@ -72,7 +75,11 @@ struct Helper {
 impl Helper {
     fn new(paths: AppPaths, initial: CaptureRequest, proxy: EventLoopProxy<HelperEvent>) -> Self {
         let config = settings::load_config(&paths.config_file);
-        let capture = CaptureController::new(paths.state_file.clone());
+        let wake_proxy = proxy.clone();
+        let waker: Waker = Arc::new(move || {
+            let _ = wake_proxy.send_event(HelperEvent::Wake);
+        });
+        let capture = CaptureController::new(paths.state_file.clone(), waker);
         let keep_alive = KeepAlive::new(config.performance.keep_gpu_ready.idle_timeout());
         Self {
             paths,
@@ -144,12 +151,14 @@ impl ApplicationHandler<HelperEvent> for Helper {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HelperEvent) {
         match event {
             HelperEvent::Request(request) => self.handle(event_loop, request),
+            HelperEvent::Wake => self.capture.on_wake(),
         }
     }
 
-    fn window_event(&mut self, _: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         let delivery = self.delivery();
-        self.capture.on_window_event(id, event, &delivery);
+        self.capture
+            .on_window_event(event_loop, id, event, &delivery);
     }
 
     /// Exits once idle for the keep-alive period; otherwise sleeps until the next timer.

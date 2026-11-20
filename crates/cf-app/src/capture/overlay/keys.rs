@@ -69,6 +69,9 @@ fn character_command(text: &str, modifiers: ModifiersState) -> Option<Command> {
     match key.as_str() {
         "f" => Some(Command::SetMode(CaptureMode::FreeSelect)),
         "r" => Some(Command::SetMode(CaptureMode::Rectangle)),
+        "w" => Some(Command::SetMode(CaptureMode::Window)),
+        "e" => Some(Command::SetMode(CaptureMode::Element)),
+        "c" => Some(Command::SetMode(CaptureMode::BrowserContent)),
         "m" => Some(Command::SetMode(CaptureMode::Monitor)),
         "a" => Some(Command::CaptureAll),
         _ => None,
@@ -118,5 +121,9 @@ mod tests {
             Some(Command::CopyColor)
         );
         assert_eq!(character_command("f", ModifiersState::CONTROL), None);
+        assert_eq!(
+            character_command("c", ModifiersState::empty()),
+            Some(Command::SetMode(CaptureMode::BrowserContent))
+        );
     }
 }

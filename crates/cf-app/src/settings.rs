@@ -6,6 +6,7 @@ use cf_core::config::{self, Config, LoadOutcome};
 use cf_platform::paths::AppPaths;
 
 use crate::capture::Delivery;
+use crate::editor::EditorOptions;
 
 /// Loads the settings file, falling back to defaults (and logging why) on failure.
 pub fn load_config(path: &Path) -> Config {
@@ -27,10 +28,16 @@ pub fn delivery(config: &Config, paths: &AppPaths) -> Delivery {
         .output
         .auto_save
         .then(|| config.output.captures_dir(&paths.default_captures_dir));
+    let editor = config.editor.open_after_capture.then(|| EditorOptions {
+        update_clipboard: config.clipboard.update_on_edit,
+        save_dir: config.output.captures_dir(&paths.default_captures_dir),
+        fallback_dir: paths.fallback_captures_dir.clone(),
+    });
     Delivery {
         save_dir,
         fallback_dir: paths.fallback_captures_dir.clone(),
         copy_to_clipboard: config.clipboard.copy_on_capture,
+        editor,
     }
 }
 

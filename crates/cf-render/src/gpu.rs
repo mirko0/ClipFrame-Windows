@@ -28,6 +28,7 @@ pub struct GpuError(#[from] pub windows::core::Error);
 #[derive(Debug)]
 pub struct Gpu {
     pub(crate) d3d: ID3D11Device,
+    pub(crate) factory: ID2D1Factory1,
     pub(crate) dxgi_factory: IDXGIFactory2,
     pub(crate) d2d: ID2D1Device,
     pub(crate) dwrite: IDWriteFactory,
@@ -66,6 +67,7 @@ impl Gpu {
         );
         Ok(Self {
             d3d,
+            factory,
             dxgi_factory,
             d2d,
             dwrite,

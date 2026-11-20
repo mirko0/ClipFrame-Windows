@@ -14,10 +14,13 @@ mod canvas;
 mod gpu;
 mod image;
 mod keep_alive;
+mod kit;
+mod offscreen;
 mod surface;
 
-pub use canvas::{Canvas, Color, RectF, TextBlock};
+pub use canvas::{Canvas, Color, LineDash, RectF, Stroke, TextBlock};
 pub use gpu::{Gpu, GpuError};
 pub use image::GpuImage;
 pub use keep_alive::KeepAlive;
+pub use offscreen::render_to_image;
 pub use surface::WindowSurface;

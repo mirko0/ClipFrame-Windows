@@ -5,7 +5,7 @@
 
 mod frozen;
 mod overlay;
-mod pipeline;
+pub mod pipeline;
 
 use std::path::PathBuf;
 use std::thread::JoinHandle;
@@ -16,16 +16,17 @@ use cf_core::capture_mode::CaptureMode;
 use cf_core::capture_request::CaptureRequest;
 use cf_core::config::Config;
 use cf_core::geometry::Rect;
-use cf_core::image::{self, Frame};
+use cf_core::image::{self, Frame, Image};
 use cf_core::state::AppState;
 use cf_render::Gpu;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
-use self::frozen::FrozenDesktop;
+pub use self::overlay::Waker;
 use self::overlay::{Outcome, Overlay, OverlayOptions};
 pub use self::pipeline::Delivery;
+use crate::editor::{Captured, Editors};
 
 /// Owns the overlay, the GPU device and capture state.
 pub struct CaptureController {
@@ -34,22 +35,26 @@ pub struct CaptureController {
     delayed: Option<(Instant, CaptureRequest)>,
     deliveries: Vec<JoinHandle<()>>,
     state_file: PathBuf,
+    waker: Waker,
+    editors: Editors,
 }
 
 impl CaptureController {
-    pub const fn new(state_file: PathBuf) -> Self {
+    pub fn new(state_file: PathBuf, waker: Waker) -> Self {
         Self {
             gpu: None,
             overlay: None,
             delayed: None,
             deliveries: Vec::new(),
             state_file,
+            waker,
+            editors: Editors::default(),
         }
     }
 
-    /// Whether an overlay is open or a delayed capture is pending.
-    pub const fn is_busy(&self) -> bool {
-        self.overlay.is_some() || self.delayed.is_some()
+    /// Whether an overlay or editor is open or a delayed capture is pending.
+    pub fn is_busy(&self) -> bool {
+        self.overlay.is_some() || self.delayed.is_some() || !self.editors.is_empty()
     }
 
     /// Starts a capture now, or schedules it when a delay is configured.
@@ -73,9 +78,12 @@ impl CaptureController {
         }
     }
 
-    /// When a delayed capture is due, if any.
+    /// When a delayed capture or an editor timer is due, if any.
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.delayed.map(|(at, _)| at)
+        [self.delayed.map(|(at, _)| at), self.editors.deadline()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Starts a delayed capture once it is due.
@@ -84,27 +92,51 @@ impl CaptureController {
             self.delayed = None;
             self.start(event_loop, request, config, delivery);
         }
+        if let Some(gpu) = &self.gpu {
+            self.editors.on_timer(gpu);
+        }
+        self.collect_editor_jobs();
     }
 
-    /// Routes a window event to the overlay. Returns `false` if the window isn't ours.
+    /// Routes a window event to the overlay or an editor.
     pub fn on_window_event(
         &mut self,
+        event_loop: &ActiveEventLoop,
         id: WindowId,
         event: WindowEvent,
         delivery: &Delivery,
-    ) -> bool {
-        let (Some(overlay), Some(gpu)) = (self.overlay.as_mut(), self.gpu.as_ref()) else {
-            return false;
+    ) {
+        let Some(gpu) = self.gpu.as_ref() else {
+            return;
         };
-        if !overlay.owns(id) {
-            return false;
-        }
-        match overlay.handle_event(gpu, id, event) {
+        let outcome = match self.overlay.as_mut() {
+            Some(overlay) if overlay.owns(id) => overlay.handle_event(gpu, id, event),
+            _ => {
+                self.editors.handle(gpu, id, event);
+                self.collect_editor_jobs();
+                return;
+            }
+        };
+        match outcome {
             Outcome::Continue => {}
-            Outcome::Cancel => self.close_overlay(None, delivery),
-            Outcome::Capture(region) => self.close_overlay(Some(region), delivery),
+            Outcome::Cancel => self.close_overlay(event_loop, None, delivery),
+            Outcome::Capture(region) => self.close_overlay(event_loop, Some(region), delivery),
         }
-        true
+    }
+
+    fn collect_editor_jobs(&mut self) {
+        let jobs = self.editors.take_jobs();
+        if !jobs.is_empty() {
+            self.deliveries.retain(|handle| !handle.is_finished());
+            self.deliveries.extend(jobs);
+        }
+    }
+
+    /// A background lookup (UI element, browser page) finished: let the overlay use it.
+    pub fn on_wake(&mut self) {
+        if let Some(overlay) = &mut self.overlay {
+            overlay.on_targets_ready();
+        }
     }
 
     /// Blocks until every capture handed to the delivery pipeline is saved/copied.
@@ -155,12 +187,12 @@ impl CaptureController {
             .join()
             .map_err(|_| anyhow::anyhow!("screen capture thread panicked"))??;
         let gpu = self.gpu.as_ref().context("GPU unavailable")?;
-        let FrozenDesktop { frames, bounds } = desktop;
         let options = OverlayOptions {
-            mode: effective_mode(config.capture.default_mode),
+            mode: config.capture.default_mode,
             confirm_with_enter: config.capture.confirm_with_enter,
         };
-        self.overlay = Some(Overlay::open(event_loop, gpu, frames, bounds, options)?);
+        let waker = self.waker.clone();
+        self.overlay = Some(Overlay::open(event_loop, gpu, desktop, options, waker)?);
         tracing::info!(elapsed_ms = started.elapsed().as_millis(), "overlay shown");
         Ok(())
     }
@@ -175,26 +207,44 @@ impl CaptureController {
         Ok(())
     }
 
-    fn close_overlay(&mut self, region: Option<Rect>, delivery: &Delivery) {
+    fn close_overlay(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        region: Option<Rect>,
+        delivery: &Delivery,
+    ) {
         let Some(overlay) = self.overlay.take() else {
             return;
         };
         let frames = overlay.into_frames(); // drops windows and their GPU resources
         tracing::info!(captured = region.is_some(), "overlay closed");
-        if let Some(region) = region {
-            self.deliver_region(&frames, region, delivery);
+        let Some(region) = region else { return };
+        let Some(image) = self.deliver_region(&frames, region, delivery) else {
+            return;
+        };
+        if let (Some(options), Some(gpu)) = (delivery.editor.clone(), self.gpu.as_ref()) {
+            let capture = Captured { image, region };
+            self.editors.open(event_loop, gpu, &capture, options);
         }
     }
 
-    fn deliver_region(&mut self, frames: &[Frame], region: Rect, delivery: &Delivery) {
+    /// Crops, remembers and delivers `region`; returns the image when an editor is wanted.
+    fn deliver_region(
+        &mut self,
+        frames: &[Frame],
+        region: Rect,
+        delivery: &Delivery,
+    ) -> Option<Image> {
         self.remember(region);
         let Some(image) = image::crop(frames, region) else {
             tracing::warn!(?region, "empty capture region");
-            return;
+            return None;
         };
+        let for_editor = delivery.editor.is_some().then(|| image.clone());
         self.deliveries.retain(|handle| !handle.is_finished());
         self.deliveries
             .extend(pipeline::deliver(image, delivery.clone()));
+        for_editor
     }
 
     fn remember(&self, region: Rect) {
@@ -204,16 +254,5 @@ impl CaptureController {
         if let Err(err) = state.save(&self.state_file) {
             tracing::warn!("could not save last region: {err}");
         }
-    }
-}
-
-/// Modes that arrive in later milestones fall back to free select for now.
-fn effective_mode(mode: CaptureMode) -> CaptureMode {
-    match mode {
-        CaptureMode::Window | CaptureMode::Element | CaptureMode::BrowserContent => {
-            tracing::info!(?mode, "mode not available yet (M2); using free select");
-            CaptureMode::FreeSelect
-        }
-        other => other,
     }
 }

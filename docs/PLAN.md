@@ -107,10 +107,15 @@ depends on nothing platform-specific.
   | `F` | Free select (default) |
   | `R` | Rectangle |
   | `W` | Window — z-ordered window rects snapshotted via `EnumWindows` at capture time, so hover is instant |
-  | `E` | Element — UI Automation hit-test on hover (background thread, debounced, cached). Works in Chromium/Edge/Firefox (DOM elements) and native apps. Scroll wheel walks to the parent element. |
+  | `E` | Element — UI Automation hit-test on hover (background thread; only the newest query is answered). Works in Chromium/Edge/Firefox (DOM elements) and native apps. Scroll wheel walks to the parent element and back. |
   | `C` | Browser content area only (the browser's document element) |
   | `M` | Current monitor |
   | `A` | All monitors |
+- **Snapping.** Free select snaps to the window under the pointer on a plain click (no
+  drag). The overlay covers the screen, so `ElementFromPoint` would only find the overlay:
+  instead the UIA tree of the window under the pointer (from the snapshot) is descended,
+  keeping the smallest child containing the point (control view, cached bounding rects,
+  1 s UIA timeouts so a hung app can't stall the picker).
 - **Selection tools.** Magnifier loupe with pixel coordinates; live size readout;
   color picker (copies hex); resize handles after selecting; arrow keys nudge (Shift = 10 px);
   aspect-ratio lock (Shift while dragging).
@@ -149,6 +154,23 @@ All edits go through command objects → unlimited undo/redo.
 - Magnify inset (zoomed copy of a region placed elsewhere)
 - Crop, add padding/border/background
 - Eyedropper, color presets, saved tool styles
+
+### Implementation (M3)
+
+- `cf_core::annotate`: `Document` (annotations + `Edit` undo/redo, step numbers derived from
+  order), `EditorState` (tool, style, selection, gestures, text drafts) — all unit-tested.
+- The editor window lives in the capture helper and reuses its Direct2D device. The same
+  annotation renderer draws on screen (with a view transform) and for export
+  (`cf_render::render_to_image`, read back from a CPU-readable bitmap), so the copied/saved
+  image matches the screen exactly.
+- The toolbar is drawn with Direct2D as well — no UI toolkit in the editor.
+- After an interactive capture the image is delivered (clipboard/save) immediately, then the
+  editor opens (`editor.open_after_capture`, default on). Edits re-copy after 300 ms
+  (`clipboard.update_on_edit`); Ctrl+C copies, Ctrl+S saves a new file (then overwrites it).
+- Keys: V select · P pen · L line · A arrow · R rect · E ellipse · T text · N step ·
+  1–8 colour · [ ] thickness · D dash · F fill · O opacity · Ctrl+Z/Y · Delete · Esc.
+- Not yet: resize handles on annotations, curved arrows, corner radius, zoom/pan beyond
+  fit-to-window, eyedropper, saved styles (later milestones).
 
 ### Spotlight: one global dim layer
 
@@ -218,10 +240,10 @@ All edits go through command objects → unlimited undo/redo.
 
 | # | Milestone | Content |
 |---|---|---|
-| M0 | Skeleton | Workspace, lints, CI, tray, hotkey, config, logging |
-| M1 | Capture | Frozen multi-monitor overlay, free/rect/monitor modes, loupe, save + clipboard |
-| M2 | Window & element modes | EnumWindows snapshot, UIA element hit-testing, browser content area |
-| M3 | Editor core | Document model, undo/redo, pen/line/arrow/shapes/text, Direct2D rendering, export |
+| M0 ✅ | Skeleton | Workspace, lints, CI, tray, hotkey, config, logging |
+| M1 ✅ | Capture | Frozen multi-monitor overlay, free/rect/monitor modes, loupe, save + clipboard |
+| M2 ✅ | Window & element modes | EnumWindows snapshot, UIA element hit-testing, browser content area |
+| M3 ✅ | Editor core | Document model, undo/redo, pen/line/arrow/shapes/text, Direct2D rendering, export |
 | M4 | Effects | Pixelate/redact, blur, highlighter, global spotlight layer, magnify inset, crop |
 | M5 | Smart | OCR copy, QR/barcode chips, auto-redact suggestions |
 | M6 | Workflow | Toasts, pin to screen, history, drag-out, filename templates |
@@ -236,8 +258,10 @@ All edits go through command objects → unlimited undo/redo.
   exit and destroying its message window is lost (the user presses the hotkey again).
   Rare (sub-millisecond window); fix if it ever shows up in practice.
 - **Settings/onboarding UI toolkit** is open (native Win32 vs WebView2); decide in M3.
-- **UIA latency** in heavy pages: hit-tests can take tens of ms. Mitigate with a background
-  thread, debounce and a per-capture element cache.
+- **UIA latency** in heavy pages: hit-tests can take tens of ms. They run on a background
+  thread and stale queries are dropped; a per-capture element cache is still open.
+- **Chromium accessibility** switches on at the first UIA query, so the very first hover
+  in a browser may only find the window; the document lookup retries once.
 - **HDR monitors**: GDI capture returns the SDR-mapped image; switch to
   Windows.Graphics.Capture with tone-mapping when HDR support is added.
 - **Controlled Folder Access** (Windows ransomware protection) can block saving into

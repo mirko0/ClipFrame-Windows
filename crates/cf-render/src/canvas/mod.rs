@@ -4,13 +4,17 @@ use windows::Win32::Graphics::Direct2D::Common::{D2D_RECT_F, D2D1_COLOR_F};
 use windows::Win32::Graphics::Direct2D::{
     D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_INTERPOLATION_MODE_LINEAR,
     D2D1_INTERPOLATION_MODE_NEAREST_NEIGHBOR, D2D1_ROUNDED_RECT, ID2D1DeviceContext,
-    ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_TEXT_METRICS, IDWriteFactory, IDWriteTextFormat, IDWriteTextLayout,
+    DWRITE_TEXT_METRICS, IDWriteTextFormat, IDWriteTextLayout,
 };
 
-use crate::GpuImage;
+use crate::kit::Kit;
+use crate::{Gpu, GpuImage};
+
+mod shapes;
+
+pub use shapes::{LineDash, Stroke};
 
 /// A straight-alpha RGBA colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,9 +120,8 @@ pub struct TextBlock {
 #[derive(Debug)]
 pub struct Canvas<'a> {
     dc: &'a ID2D1DeviceContext,
-    brush: &'a ID2D1SolidColorBrush,
-    text_format: &'a IDWriteTextFormat,
-    dwrite: &'a IDWriteFactory,
+    kit: &'a Kit,
+    gpu: &'a Gpu,
     size: (u32, u32),
 }
 
@@ -128,18 +131,11 @@ pub struct Canvas<'a> {
 impl<'a> Canvas<'a> {
     pub(crate) const fn new(
         dc: &'a ID2D1DeviceContext,
-        brush: &'a ID2D1SolidColorBrush,
-        text_format: &'a IDWriteTextFormat,
-        dwrite: &'a IDWriteFactory,
+        kit: &'a Kit,
+        gpu: &'a Gpu,
         size: (u32, u32),
     ) -> Self {
-        Self {
-            dc,
-            brush,
-            text_format,
-            dwrite,
-            size,
-        }
+        Self { dc, kit, gpu, size }
     }
 
     /// Target size in pixels.
@@ -183,7 +179,7 @@ impl<'a> Canvas<'a> {
         self.set_color(color);
         let rect = rect.d2d();
         // SAFETY: see the impl-level comment.
-        unsafe { self.dc.FillRectangle(&raw const rect, self.brush) };
+        unsafe { self.dc.FillRectangle(&raw const rect, &self.kit.brush) };
     }
 
     /// Fills a rounded rectangle.
@@ -195,7 +191,10 @@ impl<'a> Canvas<'a> {
             radiusY: radius,
         };
         // SAFETY: see the impl-level comment.
-        unsafe { self.dc.FillRoundedRectangle(&raw const rounded, self.brush) };
+        unsafe {
+            self.dc
+                .FillRoundedRectangle(&raw const rounded, &self.kit.brush);
+        }
     }
 
     /// Strokes a band of `width` pixels just **outside** `rect`, so integer rectangles get
@@ -206,17 +205,28 @@ impl<'a> Canvas<'a> {
         // SAFETY: see the impl-level comment.
         unsafe {
             self.dc
-                .DrawRectangle(&raw const path, self.brush, width, None);
+                .DrawRectangle(&raw const path, &self.kit.brush, width, None);
         }
     }
 
-    /// Lays out single-line `text` in the surface's UI font.
+    /// Lays out `text` in the surface's UI font.
     pub fn text(&self, text: &str) -> Option<TextBlock> {
+        self.layout(text, &self.kit.ui_text)
+    }
+
+    /// Lays out `text` (line breaks allowed) at `px` pixels, bold or regular.
+    pub fn text_sized(&self, text: &str, px: f32, bold: bool) -> Option<TextBlock> {
+        let format = self.kit.text_format(self.gpu, px, bold).ok()?;
+        self.layout(text, &format)
+    }
+
+    fn layout(&self, text: &str, format: &IDWriteTextFormat) -> Option<TextBlock> {
         let wide: Vec<u16> = text.encode_utf16().collect();
         // SAFETY: `wide` outlives the call; the format is valid.
         let layout = unsafe {
-            self.dwrite
-                .CreateTextLayout(&wide, self.text_format, f32::MAX, f32::MAX)
+            self.gpu
+                .dwrite
+                .CreateTextLayout(&wide, format, f32::MAX, f32::MAX)
         }
         .ok()?;
         let mut metrics = DWRITE_TEXT_METRICS::default();
@@ -237,16 +247,16 @@ impl<'a> Canvas<'a> {
             self.dc.DrawTextLayout(
                 windows_numerics::Vector2 { X: x, Y: y },
                 &block.layout,
-                self.brush,
+                &self.kit.brush,
                 D2D1_DRAW_TEXT_OPTIONS_NONE,
             );
         }
     }
 
-    fn set_color(&self, color: Color) {
+    pub(crate) fn set_color(&self, color: Color) {
         let color = color.d2d();
         // SAFETY: setting a brush colour has no preconditions.
-        unsafe { self.brush.SetColor(&raw const color) };
+        unsafe { self.kit.brush.SetColor(&raw const color) };
     }
 }
 

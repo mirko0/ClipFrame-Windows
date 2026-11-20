@@ -9,6 +9,8 @@ use anyhow::Context as _;
 use cf_core::image::Image;
 use cf_core::{encode, output};
 
+use crate::editor::EditorOptions;
+
 /// Where a finished capture goes.
 #[derive(Debug, Clone)]
 pub struct Delivery {
@@ -17,6 +19,8 @@ pub struct Delivery {
     /// Used when saving to `save_dir` fails.
     pub fallback_dir: PathBuf,
     pub copy_to_clipboard: bool,
+    /// Open the editor after an interactive capture, with these options.
+    pub editor: Option<EditorOptions>,
 }
 
 /// Delivers `image` in the background. The handle lets the helper wait for unfinished
@@ -79,4 +83,51 @@ fn save(dir: &Path, png: &[u8]) -> anyhow::Result<PathBuf> {
     let path = output::unique_path(dir, &name, Path::exists);
     std::fs::write(&path, png).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
+}
+
+/// Encodes an edited image and copies it and/or writes it to `save_to` in the background.
+/// When writing there fails, a new file in `fallback_dir` is used instead.
+pub fn export(
+    image: Image,
+    copy: bool,
+    save_to: Option<PathBuf>,
+    fallback_dir: PathBuf,
+) -> Option<thread::JoinHandle<()>> {
+    thread::Builder::new()
+        .name("editor-export".into())
+        .spawn(move || {
+            if let Err(err) = run_export(&image, copy, save_to.as_deref(), &fallback_dir) {
+                tracing::error!("exporting the edited image failed: {err:#}");
+            }
+        })
+        .inspect_err(|err| tracing::error!("could not start export thread: {err}"))
+        .ok()
+}
+
+fn run_export(
+    image: &Image,
+    copy: bool,
+    save_to: Option<&Path>,
+    fallback_dir: &Path,
+) -> anyhow::Result<()> {
+    let png = encode::png(image)?;
+    if copy {
+        cf_platform::clipboard::set_image(image, &png).context("copying to the clipboard")?;
+    }
+    if let Some(path) = save_to {
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(path, &png));
+        match written {
+            Ok(()) => tracing::info!(path = %path.display(), "edited image saved"),
+            Err(err) => {
+                tracing::warn!("could not write {}: {err}", path.display());
+                let saved = save(fallback_dir, &png)?;
+                tracing::info!(path = %saved.display(), "edited image saved to the fallback folder");
+            }
+        }
+    }
+    tracing::debug!(copied = copy, "edited image exported");
+    Ok(())
 }

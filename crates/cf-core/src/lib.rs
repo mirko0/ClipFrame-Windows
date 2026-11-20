@@ -5,6 +5,7 @@
 
 #![warn(missing_docs)]
 
+pub mod annotate;
 pub mod capture_mode;
 pub mod capture_request;
 pub mod config;
@@ -15,3 +16,4 @@ pub mod image;
 pub mod output;
 pub mod selection;
 pub mod state;
+pub mod targets;

@@ -2,18 +2,15 @@
 
 use std::mem::ManuallyDrop;
 
+use crate::canvas::Canvas;
+use crate::kit::Kit;
+use crate::{Gpu, GpuError};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows::Win32::Foundation::{E_INVALIDARG, HWND};
-use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
-};
+use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_IGNORE, D2D1_PIXEL_FORMAT};
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
-    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, ID2D1DeviceContext, ID2D1SolidColorBrush,
-};
-use windows::Win32::Graphics::DirectWrite::{
-    DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_SEMI_BOLD,
-    IDWriteTextFormat,
+    D2D1_DEVICE_CONTEXT_OPTIONS_NONE, ID2D1DeviceContext,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -23,18 +20,13 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_SWAP_CHAIN_FLAG, DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
     IDXGISurface, IDXGISwapChain1,
 };
-use windows::core::w;
-
-use crate::canvas::Canvas;
-use crate::{Gpu, GpuError};
 
 /// Draws into one window. Everything is in physical pixels (96 DPI context).
 #[derive(Debug)]
 pub struct WindowSurface {
     swap_chain: IDXGISwapChain1,
     dc: ID2D1DeviceContext,
-    brush: ID2D1SolidColorBrush,
-    text: IDWriteTextFormat,
+    kit: Kit,
     size: (u32, u32),
 }
 
@@ -51,28 +43,16 @@ impl WindowSurface {
     ) -> Result<Self, GpuError> {
         let hwnd = hwnd_of(window)?;
         let swap_chain = create_swap_chain(gpu, hwnd, size)?;
-        // SAFETY: plain factory calls on valid COM objects.
-        let (dc, brush, text) = unsafe {
-            let dc = gpu
-                .d2d
-                .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-            let brush = dc.CreateSolidColorBrush(&D2D1_COLOR_F::default(), None)?;
-            let text = gpu.dwrite.CreateTextFormat(
-                w!("Segoe UI"),
-                None,
-                DWRITE_FONT_WEIGHT_SEMI_BOLD,
-                DWRITE_FONT_STYLE_NORMAL,
-                DWRITE_FONT_STRETCH_NORMAL,
-                text_px,
-                w!("en-us"),
-            )?;
-            (dc, brush, text)
+        // SAFETY: plain factory call on a valid device.
+        let dc = unsafe {
+            gpu.d2d
+                .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?
         };
+        let kit = Kit::new(gpu, &dc, text_px)?;
         let surface = Self {
             swap_chain,
             dc,
-            brush,
-            text,
+            kit,
             size,
         };
         surface.bind_back_buffer()?;
@@ -112,7 +92,7 @@ impl WindowSurface {
     /// # Errors
     /// [`GpuError`] when drawing or presenting fails (e.g. the GPU was reset).
     pub fn draw(&self, gpu: &Gpu, paint: impl FnOnce(&Canvas<'_>)) -> Result<(), GpuError> {
-        let canvas = Canvas::new(&self.dc, &self.brush, &self.text, &gpu.dwrite, self.size);
+        let canvas = Canvas::new(&self.dc, &self.kit, gpu, self.size);
         // SAFETY: BeginDraw/EndDraw are paired on this thread's context with a bound target.
         unsafe { self.dc.BeginDraw() };
         paint(&canvas);

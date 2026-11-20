@@ -33,6 +33,8 @@ pub struct Config {
     pub clipboard: ClipboardConfig,
     /// Resource-usage trade-offs.
     pub performance: PerformanceConfig,
+    /// The annotation editor.
+    pub editor: EditorConfig,
 }
 
 impl Default for Config {
@@ -44,6 +46,7 @@ impl Default for Config {
             output: OutputConfig::default(),
             clipboard: ClipboardConfig::default(),
             performance: PerformanceConfig::default(),
+            editor: EditorConfig::default(),
         }
     }
 }
@@ -151,6 +154,23 @@ impl OutputConfig {
         self.save_dir
             .clone()
             .unwrap_or_else(|| default_dir.to_path_buf())
+    }
+}
+
+/// The annotation editor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditorConfig {
+    /// Open the editor after every interactive capture (the capture is still saved and
+    /// copied immediately).
+    pub open_after_capture: bool,
+}
+
+impl Default for EditorConfig {
+    fn default() -> Self {
+        Self {
+            open_after_capture: true,
+        }
     }
 }
 

@@ -9,6 +9,7 @@
 mod actions;
 mod app;
 mod capture;
+mod editor;
 mod helper;
 mod helper_client;
 mod hotkeys;

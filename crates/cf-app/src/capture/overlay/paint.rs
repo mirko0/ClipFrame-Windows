@@ -36,7 +36,7 @@ pub struct Target<'a> {
 }
 
 /// What to paint; identical for every window, each paints its own part.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Scene {
     pub selection: Option<Rect>,
     pub show_handles: bool,
@@ -44,7 +44,7 @@ pub struct Scene {
     pub show_loupe: bool,
     /// BGRA pixel under the pointer.
     pub pointer_color: Option<[u8; 4]>,
-    pub hint: &'static str,
+    pub hint: String,
 }
 
 pub fn paint(canvas: &Canvas<'_>, target: &Target<'_>, scene: &Scene) {
@@ -72,7 +72,7 @@ pub fn paint(canvas: &Canvas<'_>, target: &Target<'_>, scene: &Scene) {
                 s,
                 (w / 2.0, 16.0 * s),
                 Anchor::TopCenter,
-                scene.hint,
+                &scene.hint,
             );
         }
     }

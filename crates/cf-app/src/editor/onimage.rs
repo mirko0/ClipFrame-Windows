@@ -108,6 +108,24 @@ impl Editor {
     }
 
     /// The pointer for the Select tool over text (I-beam) or a code (hand).
+    /// The pointer for where it is (`in_toolbar` covers the colour menu too).
+    pub(super) fn cursor_icon(&self, in_toolbar: bool) -> CursorIcon {
+        if !in_toolbar {
+            let (zoom, at) = (self.view().zoom, self.to_image(self.input.pointer));
+            if self.over_text_handle(at, zoom) {
+                return CursorIcon::NwseResize;
+            }
+            if let Some(icon) = self.pick_cursor(at, zoom) {
+                return icon;
+            }
+        }
+        match (in_toolbar, self.state.tool()) {
+            (true, _) | (false, Tool::Select) => CursorIcon::Default,
+            (false, Tool::Text) => CursorIcon::Text,
+            _ => CursorIcon::Crosshair,
+        }
+    }
+
     pub(super) fn pick_cursor(&self, p: Vec2, zoom: f32) -> Option<CursorIcon> {
         if self.state.tool() != Tool::Select || self.state.item_at(p, 1.0 / zoom).is_some() {
             return None;

@@ -190,3 +190,92 @@ fn effect_tools_add_region_items() {
     assert_eq!(kinds.len(), 3);
     assert!(kinds[0] != kinds[1] && kinds[1] != kinds[2]);
 }
+
+#[test]
+fn every_tool_remembers_its_own_style() {
+    let mut s = EditorState::new();
+    s.set_tool(Tool::Arrow);
+    s.set_style(Style {
+        width: 8.0,
+        dash: crate::annotate::Dash::Dotted,
+        ..s.style()
+    });
+    s.set_tool(Tool::Rect);
+    assert_eq!(
+        s.style(),
+        Style::default(),
+        "the rectangle keeps its own style"
+    );
+    s.set_tool(Tool::Arrow);
+    assert!((s.style().width - 8.0).abs() < f32::EPSILON);
+    assert_eq!(s.style().dash, crate::annotate::Dash::Dotted);
+}
+
+#[test]
+fn a_selection_shows_and_changes_its_own_style() {
+    let mut s = EditorState::new();
+    s.set_tool(Tool::Line);
+    drag(&mut s, v(0.0, 0.0), v(100.0, 0.0));
+    s.set_tool(Tool::Select);
+    assert_eq!(s.options_tool(), Tool::Select);
+    drag(&mut s, v(50.0, 1.0), v(50.0, 1.0));
+    assert_eq!(s.options_tool(), Tool::Line);
+    s.set_style(Style {
+        width: 2.0,
+        ..s.style()
+    });
+    s.set_tool(Tool::Line);
+    assert!(
+        (s.style().width - 2.0).abs() < f32::EPSILON,
+        "remembered for the line tool"
+    );
+}
+
+#[test]
+fn dragging_the_corner_resizes_text() {
+    let mut s = EditorState::new();
+    s.set_tool(Tool::Text);
+    s.pointer_down(v(10.0, 10.0), 1.0);
+    s.type_text("Hello");
+    s.commit_text();
+    let size = |s: &EditorState| match s.document().items()[0].shape {
+        Shape::Text { size, .. } => size,
+        _ => 0.0,
+    };
+    let start = size(&s);
+    s.set_tool(Tool::Select);
+    assert!(s.begin_text_resize(0, v(110.0, 40.0)));
+    s.pointer_move(v(210.0, 70.0)); // about twice as far from the top-left corner
+    s.pointer_up(v(210.0, 70.0));
+    assert!(
+        (size(&s) / start - 2.0).abs() < 0.1,
+        "{} -> {}",
+        start,
+        size(&s)
+    );
+    assert!(s.undo());
+    assert!((size(&s) - start).abs() < f32::EPSILON);
+    assert!(!s.begin_text_resize(5, v(0.0, 0.0)), "no such item");
+}
+
+#[test]
+fn text_being_typed_can_be_resized_and_typing_goes_on() {
+    let mut s = EditorState::new();
+    s.set_tool(Tool::Text);
+    s.pointer_down(v(0.0, 0.0), 1.0);
+    s.type_text("Hi");
+    let size = |s: &EditorState| match s.typing_item().map(|i| i.shape) {
+        Some(Shape::Text { size, .. }) => size,
+        _ => 0.0,
+    };
+    let start = size(&s);
+    assert!(s.begin_typing_resize(v(30.0, 0.0)));
+    s.pointer_move(v(90.0, 0.0));
+    s.pointer_up(v(90.0, 0.0));
+    assert!((size(&s) / start - 3.0).abs() < 0.01);
+    assert!(s.is_typing(), "still typing");
+    s.type_text("!");
+    s.commit_text();
+    assert_eq!(s.document().items().len(), 1);
+    assert!(!s.begin_typing_resize(v(0.0, 0.0)), "nothing being typed");
+}

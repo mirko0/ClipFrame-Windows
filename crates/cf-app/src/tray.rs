@@ -25,6 +25,7 @@ const MENU_LAYOUT: &[Option<(&str, Action)>] = &[
     Some(("Edit settings file", Action::OpenConfig)),
     Some(("Reload settings", Action::ReloadConfig)),
     Some(("Open logs folder", Action::OpenLogs)),
+    Some(("Check for updates", Action::CheckForUpdates)),
     None,
     Some(("Quit ClipFrame", Action::Quit)),
 ];

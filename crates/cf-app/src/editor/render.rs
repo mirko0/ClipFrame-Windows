@@ -187,8 +187,8 @@ pub fn annotation(canvas: &Canvas<'_>, item: &Annotation, step: usize) {
         Shape::Rect { a, b } => canvas.stroke_rect(rect(*a, *b), &stroke),
         Shape::Ellipse { a, b } if style.filled => canvas.fill_ellipse(rect(*a, *b), color),
         Shape::Ellipse { a, b } => canvas.stroke_ellipse(rect(*a, *b), &stroke),
-        Shape::Text { at, text } => {
-            if let Some(block) = canvas.text_sized(text, style.text_size(), true) {
+        Shape::Text { at, text, size } => {
+            if let Some(block) = canvas.text_sized(text, *size, true) {
                 canvas.draw_text(&block, at.x, at.y, color);
             }
         }
@@ -248,10 +248,10 @@ fn step_badge(canvas: &Canvas<'_>, at: Vec2, radius: f32, color: Color, number: 
 
 /// A caret after the last character of the text being typed.
 fn caret(canvas: &Canvas<'_>, item: &Annotation) {
-    let Shape::Text { at, text } = &item.shape else {
+    let Shape::Text { at, text, size } = &item.shape else {
         return;
     };
-    let size = item.style.text_size();
+    let size = *size;
     let lines = text.split('\n').count().max(1);
     let last = text.rsplit('\n').next().unwrap_or("");
     let width = canvas.text_sized(last, size, true).map_or(0.0, |b| b.width);
@@ -296,4 +296,14 @@ const fn dash(d: Dash) -> LineDash {
         Dash::Dashed => LineDash::Dashed,
         Dash::Dotted => LineDash::Dotted,
     }
+}
+
+/// Measured frame of text `item` (image pixels); empty text gets a narrow frame one line high.
+pub fn text_frame(canvas: &Canvas<'_>, item: &Annotation) -> Option<RectF> {
+    let Shape::Text { at, text, size } = &item.shape else {
+        return None;
+    };
+    let block = canvas.text_sized(if text.is_empty() { "M" } else { text }, *size, true)?;
+    let width = if text.is_empty() { 0.0 } else { block.width };
+    Some(RectF::new(at.x, at.y, width.max(size * 0.6), block.height))
 }

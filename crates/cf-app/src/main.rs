@@ -14,6 +14,7 @@ mod helper;
 mod helper_client;
 mod hotkeys;
 mod logging;
+mod modifiers;
 mod pin;
 mod prefs;
 mod settings;

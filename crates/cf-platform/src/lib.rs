@@ -25,6 +25,8 @@ pub mod foreground;
 #[cfg(windows)]
 pub mod ipc;
 #[cfg(windows)]
+pub mod keyboard;
+#[cfg(windows)]
 pub mod monitors;
 #[cfg(windows)]
 pub mod ocr;

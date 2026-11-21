@@ -32,8 +32,11 @@ pub enum AppEvent {
     TrayClick(TrayIconEvent),
     /// A code posted by the capture helper (e.g. "settings changed").
     Remote(u32),
-    /// An update was downloaded and can be installed.
-    UpdateReady(updates::Ready),
+    /// An update check finished; `manual` when asked for from the tray menu.
+    UpdateChecked {
+        outcome: updates::Outcome,
+        manual: bool,
+    },
 }
 
 pub fn run(paths: AppPaths) -> anyhow::Result<()> {
@@ -120,7 +123,7 @@ impl App {
                 if !AppState::load(&self.paths.state_file).onboarded {
                     helper_client::request(CaptureRequest::Onboarding);
                 }
-                self.check_for_updates();
+                self.check_for_updates(false);
             }
             Err(err) => {
                 self.startup_error = Some(err);
@@ -129,15 +132,52 @@ impl App {
         }
     }
 
-    fn check_for_updates(&self) {
+    /// Checks for an update in the background: at start-up when `updates.check` is on, or
+    /// on demand (`manual`), which reports what it found.
+    fn check_for_updates(&self, manual: bool) {
         let updates = &self.config.updates;
-        let Some(repo) = updates.repo.as_deref().filter(|_| updates.check) else {
+        if let (true, Some(ready)) = (manual, &self.update) {
+            let title = format!("ClipFrame {} is ready", ready.version);
+            return notify(title, RESTART_HINT.into());
+        }
+        let Some(repo) = updates.repo.as_deref().filter(|_| updates.check || manual) else {
+            if manual {
+                notify(
+                    "Updates are off".into(),
+                    "Set updates.repo in the settings file.".into(),
+                );
+            }
             return;
         };
         let proxy = self.proxy.clone();
-        updates::check(repo, move |ready| {
-            let _ = proxy.send_event(AppEvent::UpdateReady(ready));
+        updates::check(repo, move |outcome| {
+            let _ = proxy.send_event(AppEvent::UpdateChecked { outcome, manual });
         });
+    }
+
+    fn on_update_checked(&mut self, outcome: updates::Outcome, manual: bool) {
+        let (title, body) = match outcome {
+            updates::Outcome::Ready(ready) => {
+                if let Some(services) = self.services.as_mut() {
+                    services.tray.offer_update(&ready.version);
+                }
+                let title = format!("ClipFrame {} is ready", ready.version);
+                self.update = Some(ready);
+                (title, RESTART_HINT.to_owned())
+            }
+            updates::Outcome::UpToDate => (
+                "ClipFrame is up to date".to_owned(),
+                format!("Version {}", env!("CARGO_PKG_VERSION")),
+            ),
+            updates::Outcome::NotInstalled => (
+                "Can't update this copy".to_owned(),
+                "Only copies installed with the ClipFrame installer update themselves.".to_owned(),
+            ),
+            updates::Outcome::Failed(err) => ("Could not check for updates".to_owned(), err),
+        };
+        if manual {
+            notify(title, body);
+        }
     }
 
     fn install_update(&self, event_loop: &ActiveEventLoop) {
@@ -231,6 +271,7 @@ impl App {
                 report(action, shell::open_folder(&dir));
             }
             Action::OpenSettings => helper_client::request(CaptureRequest::Settings),
+            Action::CheckForUpdates => self.check_for_updates(true),
             Action::InstallUpdate => self.install_update(event_loop),
             Action::OpenConfig => {
                 report(action, shell::open_in_text_editor(&self.paths.config_file));
@@ -259,12 +300,8 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::Remote(code) => return self.on_remote(code, event_loop),
-            AppEvent::UpdateReady(ready) => {
-                if let Some(services) = self.services.as_mut() {
-                    services.tray.offer_update(&ready.version);
-                }
-                self.update = Some(ready);
-                return;
+            AppEvent::UpdateChecked { outcome, manual } => {
+                return self.on_update_checked(outcome, manual);
             }
             _ => {}
         }
@@ -284,5 +321,27 @@ fn create_services(paths: &AppPaths) -> anyhow::Result<Services> {
 fn report(action: Action, result: std::io::Result<()>) {
     if let Err(err) = result {
         tracing::warn!(?action, "action failed: {err}");
+    }
+}
+
+/// How to install a downloaded update.
+const RESTART_HINT: &str = "Choose “Restart to install” in the tray menu.";
+
+/// Shows a notification without blocking the tray (WinRT runs on a worker thread).
+fn notify(title: String, body: String) {
+    let shown = std::thread::Builder::new()
+        .name("notify".into())
+        .spawn(move || {
+            let toast = cf_platform::toast::Toast {
+                title: &title,
+                body: &body,
+                ..Default::default()
+            };
+            if let Err(err) = cf_platform::toast::show(&toast) {
+                tracing::warn!("could not show the notification: {err}");
+            }
+        });
+    if let Err(err) = shown {
+        tracing::warn!("could not show the notification: {err}");
     }
 }

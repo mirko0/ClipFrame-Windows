@@ -1,10 +1,12 @@
-//! How pointer and keyboard input change the document: the active tool, the style for new
-//! annotations, the selection, and gestures in progress.
+//! How pointer and keyboard input change the document: the active tool, each tool's style,
+//! the selection, and gestures in progress.
 
 mod crop;
 mod grow;
+mod text;
 
 use self::grow::extend;
+pub use self::text::TextDraft;
 use super::document::{Document, Edit};
 use super::hit;
 use super::shape::{Annotation, Rgba, Shape, Style, Vec2};
@@ -29,7 +31,7 @@ pub enum Tool {
     Text,
     /// Numbered step badge.
     Step,
-    /// Highlighter (has its own style, yellow by default).
+    /// Highlighter (yellow by default).
     Highlighter,
     /// Blur a region.
     Blur,
@@ -41,6 +43,48 @@ pub enum Tool {
     Magnify,
     /// Crop the image.
     Crop,
+}
+
+impl Tool {
+    /// Every tool, in declaration order.
+    pub const ALL: [Self; 14] = [
+        Self::Select,
+        Self::Pen,
+        Self::Line,
+        Self::Arrow,
+        Self::Rect,
+        Self::Ellipse,
+        Self::Text,
+        Self::Step,
+        Self::Highlighter,
+        Self::Blur,
+        Self::Redact,
+        Self::Spotlight,
+        Self::Magnify,
+        Self::Crop,
+    ];
+
+    fn index(self) -> usize {
+        Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
+    /// The tool that draws `shape` (its style options apply to it).
+    pub const fn for_shape(shape: &Shape) -> Self {
+        match shape {
+            Shape::Pen(_) => Self::Pen,
+            Shape::Highlight(_) => Self::Highlighter,
+            Shape::Line { .. } => Self::Line,
+            Shape::Arrow { .. } => Self::Arrow,
+            Shape::Rect { .. } => Self::Rect,
+            Shape::Ellipse { .. } => Self::Ellipse,
+            Shape::Text { .. } => Self::Text,
+            Shape::Step { .. } => Self::Step,
+            Shape::Blur { .. } => Self::Blur,
+            Shape::Redact { .. } => Self::Redact,
+            Shape::Spotlight { .. } => Self::Spotlight,
+            Shape::Magnify { .. } => Self::Magnify,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,16 +100,19 @@ enum Gesture {
         before: Annotation,
         current: Annotation,
     },
-}
-
-/// Text being typed; becomes an annotation when committed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct TextDraft {
-    at: Vec2,
-    text: String,
-    style: Style,
-    /// The existing text annotation being edited, if any.
-    editing: Option<(usize, Annotation)>,
+    /// Dragging a text's corner handle: the distance from its top-left corner scales the
+    /// font size.
+    Resizing {
+        index: usize,
+        grab: Vec2,
+        before: Annotation,
+        current: Annotation,
+    },
+    /// Dragging the corner handle of the text being typed (it stays being typed).
+    ResizingDraft {
+        grab: Vec2,
+        size: f32,
+    },
 }
 
 /// What to draw on top of the document while a gesture is in progress.
@@ -84,9 +131,8 @@ pub struct Preview {
 pub struct EditorState {
     doc: Document,
     tool: Tool,
-    style: Style,
-    /// The highlighter's own style.
-    marker: Style,
+    /// Each tool remembers its own style (indexed like [`Tool::ALL`]).
+    styles: [Style; 14],
     /// Image size (crops are clamped to it; zero = unknown).
     canvas: Vec2,
     gesture: Option<Gesture>,
@@ -96,14 +142,12 @@ pub struct EditorState {
 
 impl Default for EditorState {
     fn default() -> Self {
+        let mut styles = [Style::default(); 14];
+        styles[Tool::Highlighter.index()].color = Rgba::new(0xFD, 0xD8, 0x35, 0xFF);
         Self {
             doc: Document::default(),
             tool: Tool::default(),
-            style: Style::default(),
-            marker: Style {
-                color: Rgba::new(0xFD, 0xD8, 0x35, 0xFF),
-                ..Style::default()
-            },
+            styles,
             canvas: Vec2::default(),
             gesture: None,
             selected: None,
@@ -141,18 +185,31 @@ impl EditorState {
         self.tool
     }
 
-    /// The style used for new annotations (the highlighter keeps its own).
+    /// The tool whose options apply now: the active tool, or with the Select tool the tool
+    /// that drew the selection.
+    pub fn options_tool(&self) -> Tool {
+        match (self.tool, self.selected_item()) {
+            (Tool::Select, Some(item)) => Tool::for_shape(&item.shape),
+            (tool, _) => tool,
+        }
+    }
+
+    /// The style shown and changed by the style controls: the selection's (Select tool) or
+    /// the active tool's.
     pub fn style(&self) -> Style {
-        if self.tool == Tool::Highlighter {
-            self.marker
-        } else {
-            self.style
+        match (self.tool, self.selected_item()) {
+            (Tool::Select, Some(item)) => item.style,
+            (tool, _) => self.styles[tool.index()],
         }
     }
 
     /// The selected annotation (select tool).
     pub const fn selected(&self) -> Option<usize> {
         self.selected
+    }
+
+    fn selected_item(&self) -> Option<&Annotation> {
+        self.selected.and_then(|i| self.doc.items().get(i))
     }
 
     /// The topmost annotation under `p` (`slop_scale` widens the grab area when zoomed out).
@@ -175,21 +232,25 @@ impl EditorState {
         self.tool = tool;
     }
 
-    /// Changes the style for new annotations, and restyles the selection or the text being
-    /// typed.
+    /// Changes the style: of the selection (Select tool, an undoable edit, also remembered
+    /// for its tool), or of the active tool (and the text being typed).
     pub fn set_style(&mut self, style: Style) {
-        if self.tool == Tool::Highlighter {
-            self.marker = style;
+        if self.tool == Tool::Select {
+            self.restyle_selection(style);
             return;
         }
-        self.style = style;
+        self.styles[self.tool.index()] = style;
         if let Some(draft) = &mut self.draft {
-            draft.style = style;
+            draft.set_style(style);
         }
+    }
+
+    fn restyle_selection(&mut self, style: Style) {
         let Some(index) = self.selected else { return };
         let Some(before) = self.doc.items().get(index).cloned() else {
             return;
         };
+        self.styles[Tool::for_shape(&before.shape).index()] = style;
         if before.style != style {
             let after = Annotation {
                 style,
@@ -211,7 +272,7 @@ impl EditorState {
             Tool::Text => self.start_text(p, slop_scale),
             Tool::Step => self.insert(Annotation {
                 shape: Shape::Step { at: p },
-                style: self.style,
+                style: self.style(),
             }),
             Tool::Pen => self.start_drawing(Shape::Pen(vec![p])),
             Tool::Highlighter => self.start_drawing(Shape::Highlight(vec![p])),
@@ -243,6 +304,17 @@ impl EditorState {
                 moved.shape.translate(p.minus(*grab));
                 *current = moved;
             }
+            Some(Gesture::Resizing {
+                grab,
+                before,
+                current,
+                ..
+            }) => *current = text::resized(before, *grab, p),
+            Some(Gesture::ResizingDraft { grab, size }) => {
+                if let Some(draft) = &mut self.draft {
+                    draft.resize(*size, *grab, p);
+                }
+            }
             None => {}
         }
     }
@@ -258,65 +330,24 @@ impl EditorState {
                 });
             }
             Some(Gesture::Cropping { from, to }) => self.finish_crop(from, to),
-            Some(Gesture::Moving {
-                index,
-                before,
-                current,
-                ..
-            }) if current != before => self.doc.apply(Edit::Replace {
+            Some(
+                Gesture::Moving {
+                    index,
+                    before,
+                    current,
+                    ..
+                }
+                | Gesture::Resizing {
+                    index,
+                    before,
+                    current,
+                    ..
+                },
+            ) if current != before => self.doc.apply(Edit::Replace {
                 index,
                 before,
                 after: current,
             }),
-            _ => {}
-        }
-    }
-
-    /// Types `text` into the text being edited.
-    pub fn type_text(&mut self, text: &str) {
-        if let Some(draft) = &mut self.draft {
-            draft.text.extend(text.chars().filter(|c| !c.is_control()));
-        }
-    }
-
-    /// Starts a new line in the text being edited.
-    pub fn new_line(&mut self) {
-        if let Some(draft) = &mut self.draft {
-            draft.text.push('\n');
-        }
-    }
-
-    /// Deletes the last character of the text being edited.
-    pub fn backspace(&mut self) {
-        if let Some(draft) = &mut self.draft {
-            draft.text.pop();
-        }
-    }
-
-    /// Finishes the text being typed (empty text is dropped, or deletes the edited text).
-    pub fn commit_text(&mut self) {
-        let Some(draft) = self.draft.take() else {
-            return;
-        };
-        let item = Annotation {
-            shape: Shape::Text {
-                at: draft.at,
-                text: draft.text,
-            },
-            style: draft.style,
-        };
-        let keep = !item.shape.is_degenerate();
-        match (draft.editing, keep) {
-            (Some((index, before)), true) if before != item => self.doc.apply(Edit::Replace {
-                index,
-                before,
-                after: item,
-            }),
-            (Some((index, before)), false) => self.doc.apply(Edit::Remove {
-                index,
-                item: before,
-            }),
-            (None, true) => self.insert(item),
             _ => {}
         }
     }
@@ -366,17 +397,7 @@ impl EditorState {
     /// What to draw over the document for the gesture or text in progress.
     pub fn preview(&self) -> Option<Preview> {
         if let Some(draft) = &self.draft {
-            return Some(Preview {
-                replaces: draft.editing.as_ref().map(|(i, _)| *i),
-                item: Annotation {
-                    shape: Shape::Text {
-                        at: draft.at,
-                        text: draft.text.clone(),
-                    },
-                    style: draft.style,
-                },
-                typing: true,
-            });
+            return Some(draft.preview());
         }
         match self.gesture.as_ref()? {
             Gesture::Drawing(shape) => Some(Preview {
@@ -387,12 +408,14 @@ impl EditorState {
                 },
                 typing: false,
             }),
-            Gesture::Cropping { .. } => None,
-            Gesture::Moving { index, current, .. } => Some(Preview {
-                replaces: Some(*index),
-                item: current.clone(),
-                typing: false,
-            }),
+            Gesture::Cropping { .. } | Gesture::ResizingDraft { .. } => None,
+            Gesture::Moving { index, current, .. } | Gesture::Resizing { index, current, .. } => {
+                Some(Preview {
+                    replaces: Some(*index),
+                    item: current.clone(),
+                    typing: false,
+                })
+            }
         }
     }
 
@@ -404,7 +427,6 @@ impl EditorState {
         self.selected = hit::topmost_at(self.doc.items(), p, slop_scale);
         if let Some(index) = self.selected {
             let item = self.doc.items()[index].clone();
-            self.style = item.style;
             self.gesture = Some(Gesture::Moving {
                 index,
                 grab: p,
@@ -412,32 +434,6 @@ impl EditorState {
                 current: item,
             });
         }
-    }
-
-    fn start_text(&mut self, p: Vec2, slop_scale: f32) {
-        let existing = hit::topmost_at(self.doc.items(), p, slop_scale)
-            .filter(|&i| matches!(self.doc.items()[i].shape, Shape::Text { .. }));
-        self.draft = Some(match existing {
-            Some(index) => {
-                let item = self.doc.items()[index].clone();
-                let Shape::Text { at, text } = &item.shape else {
-                    unreachable!("filtered to text above");
-                };
-                self.style = item.style;
-                TextDraft {
-                    at: *at,
-                    text: text.clone(),
-                    style: item.style,
-                    editing: Some((index, item)),
-                }
-            }
-            None => TextDraft {
-                at: p,
-                text: String::new(),
-                style: self.style,
-                editing: None,
-            },
-        });
     }
 
     /// Adds `items` on top as one undoable step; returns how many were added.

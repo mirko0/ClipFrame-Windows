@@ -9,6 +9,8 @@ mod popover;
 mod render;
 mod set;
 mod smart;
+mod swatches;
+mod textframe;
 mod toolbar;
 mod window;
 
@@ -24,7 +26,7 @@ use cf_render::{Canvas, Color, Gpu, GpuImage, RectF, WindowSurface};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::ModifiersState;
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{Window, WindowId};
 
 use self::command::Command;
 pub use self::set::Editors;
@@ -91,6 +93,10 @@ pub struct Editor {
     pinned: Option<Pinned>,
     /// Text selection and popover on the image.
     pick: onimage::Pick,
+    /// The colour menu is open.
+    colors_open: bool,
+    /// Frame of the framed text, from the last paint (image pixels).
+    text_frame: std::cell::Cell<Option<RectF>>,
 }
 
 #[derive(Default)]
@@ -144,6 +150,8 @@ impl Editor {
             region: capture.region,
             pinned: None,
             pick: onimage::Pick::default(),
+            colors_open: false,
+            text_frame: std::cell::Cell::new(None),
         };
         editor.window.set_visible(true);
         editor.window.focus_window();
@@ -236,8 +244,8 @@ impl Editor {
 
     fn on_pointer_move(&mut self, p: (f32, f32)) {
         self.input.pointer = p;
-        let in_toolbar = p.1 < self.toolbar_height();
-        self.input.hover = if in_toolbar && !self.input.drawing {
+        let in_toolbar = p.1 < self.toolbar_height() || self.over_colors(p);
+        self.input.hover = if in_toolbar && !self.input.drawing && !self.over_colors(p) {
             toolbar::hit(&self.buttons(), p)
         } else {
             None
@@ -257,6 +265,9 @@ impl Editor {
         let p = self.input.pointer;
         match state {
             ElementState::Pressed => {
+                if let Some(outcome) = self.colors_press(p) {
+                    return outcome;
+                }
                 if self.popover_press(p) {
                     return EditorOutcome::Continue;
                 }
@@ -264,8 +275,10 @@ impl Editor {
                     let command = self.buttons()[index].command;
                     return self.run(gpu, command);
                 }
-                let zoom = self.view().zoom;
-                if p.1 >= self.toolbar_height() && !self.image_press(self.to_image(p), zoom) {
+                let (zoom, at) = (self.view().zoom, self.to_image(p));
+                if p.1 >= self.toolbar_height() && self.text_handle_press(at, zoom) {
+                    self.input.drawing = true;
+                } else if p.1 >= self.toolbar_height() && !self.image_press(at, zoom) {
                     self.input.drawing = true;
                     self.state.pointer_down(self.to_image(p), 1.0 / zoom);
                 }
@@ -280,6 +293,7 @@ impl Editor {
     }
 
     fn on_key(&mut self, gpu: &Gpu, event: &winit::event::KeyEvent) -> EditorOutcome {
+        self.input.modifiers = crate::modifiers::held();
         let typing = self.state.is_typing();
         if let Some(command) = command::for_key(event, self.input.modifiers, typing) {
             return self.run(gpu, command);
@@ -301,7 +315,9 @@ impl Editor {
             return EditorOutcome::Continue;
         }
         match command {
+            Command::ColorMenu => self.colors_open = !self.colors_open,
             Command::Tool(tool) => {
+                self.colors_open = false;
                 self.clear_pick();
                 self.state.set_tool(tool);
             }
@@ -321,6 +337,7 @@ impl Editor {
             Command::Pin if self.pin(gpu) => return EditorOutcome::Close,
             Command::CopyText => self.want_text(Want::CopyText),
             Command::HideSensitive => self.want_text(Want::Redact),
+            Command::Escape if self.colors_open => self.colors_open = false,
             Command::Escape if self.clear_pick() => {}
             Command::Escape if !self.state.escape() => return EditorOutcome::Close,
             _ => {}
@@ -352,11 +369,12 @@ impl Editor {
         if let Some(crop) = self.state.crop_preview().filter(|_| self.cropping()) {
             render::crop_overlay(canvas, image, crop, view.zoom);
         }
-        if let Some(item) = self
+        let selected = self
             .state
             .selected()
-            .and_then(|i| self.state.document().items().get(i))
-        {
+            .and_then(|i| self.state.document().items().get(i));
+        let framed = self.paint_text_frame(canvas, view.zoom);
+        if let Some(item) = selected.filter(|_| !framed) {
             render::selection_frame(canvas, item, view.zoom);
         }
         self.paint_pick(canvas, view.zoom);
@@ -367,9 +385,16 @@ impl Editor {
             hover: self.input.hover,
             scale: self.scale(),
             status: self.status.as_ref().map(|(text, _)| text.as_str()),
+            colors_open: self.colors_open,
         };
-        toolbar::paint(canvas, &self.buttons(), &look);
+        let layout = self.layout();
+        toolbar::paint(canvas, &layout, &look);
         self.paint_popover(canvas);
+        self.paint_colors(canvas, &layout.buttons);
+        let hovered = self.input.hover.and_then(|i| layout.buttons.get(i));
+        if let Some(button) = hovered.filter(|_| !self.colors_open) {
+            toolbar::paint_tooltip(canvas, button, self.scale());
+        }
     }
 
     /// Fits the shown part of the image (the crop, or all of it while cropping) into the
@@ -424,7 +449,12 @@ impl Editor {
     }
 
     fn buttons(&self) -> Vec<Button> {
-        toolbar::layout(self.scale(), self.window_size().0)
+        self.layout().buttons
+    }
+
+    fn layout(&self) -> toolbar::Layout {
+        let tool = self.state.options_tool();
+        toolbar::layout(self.scale(), self.window_size().0, tool)
     }
 
     /// Shows a short message in the toolbar.
@@ -445,20 +475,6 @@ impl Editor {
 
     fn scale(&self) -> f32 {
         window::scale_of(&self.window)
-    }
-
-    fn cursor_icon(&self, in_toolbar: bool) -> CursorIcon {
-        if !in_toolbar {
-            let zoom = self.view().zoom;
-            if let Some(icon) = self.pick_cursor(self.to_image(self.input.pointer), zoom) {
-                return icon;
-            }
-        }
-        match (in_toolbar, self.state.tool()) {
-            (true, _) | (false, Tool::Select) => CursorIcon::Default,
-            (false, Tool::Text) => CursorIcon::Text,
-            _ => CursorIcon::Crosshair,
-        }
     }
 }
 

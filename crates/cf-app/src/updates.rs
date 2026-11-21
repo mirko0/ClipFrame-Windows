@@ -3,7 +3,8 @@
 //! [`handle_install_hooks`] must run first in `main`: Velopack starts the app with special
 //! arguments while installing, updating and uninstalling, and exits right after the hook.
 //! Update checks run once at tray start-up on a worker thread (no timer, so idle stays at
-//! zero wake-ups), only for installed copies and only when `updates.repo` is set.
+//! zero wake-ups), only for installed copies and only when `updates.repo` is set; the tray
+//! menu's "Check for updates" runs one on demand.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -56,30 +57,62 @@ pub struct Ready {
     asset: Box<VelopackAsset>,
 }
 
+/// How an update check ended.
+#[derive(Debug)]
+pub enum Outcome {
+    /// A newer version was downloaded.
+    Ready(Ready),
+    /// This is the newest version.
+    UpToDate,
+    /// This copy wasn't installed by the installer (a dev build or portable copy).
+    NotInstalled,
+    /// The check or download failed (offline, GitHub unreachable, bad `updates.repo`, …).
+    Failed(String),
+}
+
 /// Checks `repo` (a `https://github.com/owner/name` URL) for a newer release in the
-/// background and downloads it; `on_ready` runs on the worker thread when it's ready.
-pub fn check(repo: &str, on_ready: impl FnOnce(Ready) + Send + 'static) {
+/// background and downloads it; `on_done` runs on the worker thread with the outcome.
+pub fn check(repo: &str, on_done: impl FnOnce(Outcome) + Send + 'static) {
     let Some(repo) = github_repo(repo) else {
         tracing::warn!(
             repo,
             "updates.repo must be a https://github.com/owner/name URL"
         );
+        on_done(Outcome::Failed(
+            "updates.repo must be a https://github.com/owner/name URL".into(),
+        ));
         return;
     };
     let spawned = thread::Builder::new()
         .name("update-check".into())
-        .spawn(move || match download(&repo) {
-            Ok(Some(ready)) => on_ready(ready),
-            Ok(None) => tracing::debug!("no update available"),
-            Err(err) => tracing::info!("update check skipped: {err:#}"),
-        });
+        .spawn(move || on_done(run_check(&repo)));
     if let Err(err) = spawned {
         tracing::warn!("could not start the update check: {err}");
     }
 }
 
-fn download(repo: &str) -> anyhow::Result<Option<Ready>> {
-    let manager = manager(repo)?;
+fn run_check(repo: &str) -> Outcome {
+    let manager = match manager(repo) {
+        Ok(manager) => manager,
+        Err(err) => {
+            tracing::info!("update check skipped: {err:#}");
+            return Outcome::NotInstalled;
+        }
+    };
+    match download(&manager) {
+        Ok(Some(ready)) => Outcome::Ready(ready),
+        Ok(None) => {
+            tracing::debug!("no update available");
+            Outcome::UpToDate
+        }
+        Err(err) => {
+            tracing::info!("update check failed: {err:#}");
+            Outcome::Failed(format!("{err:#}"))
+        }
+    }
+}
+
+fn download(manager: &UpdateManager) -> anyhow::Result<Option<Ready>> {
     let UpdateCheck::UpdateAvailable(info) = manager.check_for_updates()? else {
         return Ok(None);
     };

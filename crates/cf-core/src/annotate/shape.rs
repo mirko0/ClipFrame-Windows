@@ -112,7 +112,7 @@ impl Default for Style {
 }
 
 impl Style {
-    /// Text size for this style (text grows with the stroke width).
+    /// Default size of new text for this style (grows with the stroke width).
     pub fn text_size(&self) -> f32 {
         12.0 + self.width * 4.0
     }
@@ -185,6 +185,8 @@ pub enum Shape {
         at: Vec2,
         /// Content.
         text: String,
+        /// Font size in image pixels (changed by resizing the text).
+        size: f32,
     },
     /// Numbered badge; the number is its position among all steps.
     Step {
@@ -304,8 +306,8 @@ impl Annotation {
             | Shape::Redact { a: from, b: to }
             | Shape::Spotlight { a: from, b: to } => span([*from, *to]),
             Shape::Magnify { a, b, at } => (*at, at.plus(inset_size(*a, *b))),
-            Shape::Text { at, text } => {
-                let size = self.style.text_size();
+            Shape::Text { at, text, size } => {
+                let size = *size;
                 let lines = text.lines().count().max(1);
                 let longest = text.lines().map(|l| l.chars().count()).max().unwrap_or(0);
                 #[allow(clippy::cast_precision_loss)] // small counts
@@ -384,6 +386,7 @@ mod tests {
         assert!(!line(20.0).shape.is_degenerate());
         let text = Shape::Text {
             at: Vec2::default(),
+            size: 20.0,
             text: "  ".into(),
         };
         assert!(text.is_degenerate());

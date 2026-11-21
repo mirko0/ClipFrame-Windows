@@ -290,6 +290,7 @@ impl PrefsWindow {
     }
 
     fn on_key(&mut self, event: &KeyEvent) -> PrefsOutcome {
+        self.modifiers = crate::modifiers::held();
         match self.focus.take() {
             Some(Focus::Hotkey { row }) => self.record_hotkey(row, event),
             Some(Focus::Text { row, text }) => self.edit_text(row, text, event),

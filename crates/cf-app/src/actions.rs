@@ -19,6 +19,8 @@ pub enum Action {
     OpenLogs,
     /// Open the n-th most recent capture (0 = newest) in the editor.
     OpenRecent(u8),
+    /// Look for an update now and say what was found.
+    CheckForUpdates,
     /// Install a downloaded update and restart.
     InstallUpdate,
     /// Exit ClipFrame.

@@ -1,5 +1,6 @@
 //! Creating and sizing the editor window.
 
+use cf_core::annotate::Tool;
 use cf_core::geometry::Rect;
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event_loop::ActiveEventLoop;
@@ -34,7 +35,10 @@ pub fn create(
     );
     window.set_outer_position(position);
     let narrowest = toolbar::narrowest(scale);
-    let tallest = toolbar::height(&toolbar::layout(scale, narrowest), scale);
+    let tallest = toolbar::height(
+        &toolbar::layout(scale, narrowest, Tool::Rect).buttons,
+        scale,
+    );
     window.set_min_inner_size(Some(PhysicalSize::new(
         to_px(narrowest),
         to_px(tallest + 120.0 * scale),
@@ -62,7 +66,7 @@ fn window_size(image: (u32, u32), scale: f32, work_area: Rect) -> PhysicalSize<u
         .max(toolbar::narrowest(scale));
     #[allow(clippy::cast_precision_loss)]
     let width = (image.0 as f32 + chrome).max(floor).min(max_w.max(floor));
-    let bar = toolbar::height(&toolbar::layout(scale, width), scale);
+    let bar = toolbar::height(&toolbar::layout(scale, width, Tool::Rect).buttons, scale);
     #[allow(clippy::cast_precision_loss)]
     let height = (image.1 as f32 + chrome + bar)
         .max(300.0 * scale)

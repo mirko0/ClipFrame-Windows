@@ -25,6 +25,8 @@ pub const OPACITIES: [u8; 3] = [255, 160, 80];
 pub enum Command {
     Tool(Tool),
     Color(Rgba),
+    /// Opens or closes the colour menu (toolbar only).
+    ColorMenu,
     /// Thinner (`-1`) or thicker (`+1`).
     WidthStep(i8),
     /// Next thickness, wrapping around (toolbar button).

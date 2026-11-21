@@ -18,7 +18,7 @@ pub fn tool(canvas: &Canvas<'_>, tool: Tool, (cx, cy): (f32, f32), half: f32, li
             let pointer = [pt(-0.6, -0.9), pt(0.7, 0.3), pt(0.05, 0.35), pt(-0.3, 0.95)];
             canvas.fill_polygon(&pointer, line.color);
         }
-        Tool::Text => label(canvas, "T", (cx, cy)),
+        Tool::Text => glyph(canvas, "T", (cx, cy), half / 9.0),
         Tool::Step => {
             let badge = RectF::new(cx - half, cy - half, half * 2.0, half * 2.0);
             canvas.stroke_ellipse(badge, line);

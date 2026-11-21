@@ -50,16 +50,18 @@ pub struct Config {
 pub struct UpdatesConfig {
     /// Check for a newer version when ClipFrame starts.
     pub check: bool,
-    /// The GitHub repository releases come from, e.g. `https://github.com/owner/ClipFrame`;
-    /// no checks while it's unset.
+    /// The GitHub repository releases come from; no checks while it's unset.
     pub repo: Option<String>,
 }
+
+/// Where official releases are published.
+pub const RELEASES_REPO: &str = "https://github.com/mirko0/ClipFrame-Windows";
 
 impl Default for UpdatesConfig {
     fn default() -> Self {
         Self {
             check: true,
-            repo: None,
+            repo: Some(RELEASES_REPO.to_owned()),
         }
     }
 }

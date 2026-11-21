@@ -353,8 +353,10 @@ All edits go through command objects → unlimited undo/redo.
   app starts with first-run setup; uninstall (6 s) → shortcuts, install folder, registry
   keys and Run entry removed, user data kept. `vpk` must match the `velopack` crate version
   (both `1.3.39-g8d2844f`).
+- Releases and updates come from https://github.com/mirko0/ClipFrame-Windows
+  (`updates.repo` default, `cf_core::config::RELEASES_REPO`).
 - Not yet: code signing (SmartScreen warns about unsigned installers), a published
-  GitHub release and an end-to-end update test, winget manifest.
+  release and an end-to-end update test, winget manifest.
 
 ---
 

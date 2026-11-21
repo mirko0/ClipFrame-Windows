@@ -1,5 +1,5 @@
-//! Recognition for one editor, off the UI thread: QR/barcodes are scanned as soon as the
-//! editor opens; text is read (Windows OCR) the first time it is needed, then reused.
+//! Recognition for one editor, off the UI thread: QR/barcodes are scanned and text is read
+//! (Windows OCR) as soon as the editor opens; results are kept for the editor's lifetime.
 //! Workers report through a channel and wake the event loop with the capture `Waker`.
 
 use std::sync::Arc;
@@ -11,10 +11,9 @@ use cf_core::annotate::{Annotation, Shape, Style};
 use cf_core::image::Image;
 use cf_core::ocr::Recognized;
 use cf_detect::codes::{self, Code};
-use cf_detect::{link, sensitive};
+use cf_detect::sensitive;
 
 use super::Editor;
-use super::chips::ChipAction;
 use crate::capture::Waker;
 
 /// Something waiting for the text to be read.
@@ -52,7 +51,7 @@ impl Smart {
     /// Starts scanning `image` for codes.
     pub fn start(image: Image, waker: Waker) -> Self {
         let (sender, answers) = mpsc::channel();
-        let smart = Self {
+        let mut smart = Self {
             image: Arc::new(image),
             waker,
             sender,
@@ -63,6 +62,9 @@ impl Smart {
             wants: Vec::new(),
         };
         smart.spawn("cf-scan", |image| Answer::Codes(codes::scan(image)));
+        // Text is read right away too, so it can be selected on the image.
+        smart.reading = true;
+        smart.spawn("cf-ocr", read_text);
         smart
     }
 
@@ -170,35 +172,6 @@ impl Editor {
             self.fulfil(want);
         } else {
             self.say("Reading text…");
-        }
-    }
-
-    pub(super) fn on_chip(&mut self, action: ChipAction) {
-        match action {
-            ChipAction::Copy(index) => {
-                let Some(code) = self.smart.codes().get(index) else {
-                    return;
-                };
-                let copied = cf_platform::clipboard::set_text(&code.text);
-                self.say(match copied {
-                    Ok(()) => "Code content copied",
-                    Err(_) => "The clipboard is busy",
-                });
-            }
-            ChipAction::Open(index) => {
-                let url = self
-                    .smart
-                    .codes()
-                    .get(index)
-                    .and_then(|c| link::web_url(&c.text));
-                let Some(url) = url.map(str::to_owned) else {
-                    return;
-                };
-                if let Err(err) = cf_platform::shell::open_url(&url) {
-                    tracing::warn!("could not open the link: {err}");
-                }
-                self.say("Opened in the browser");
-            }
         }
     }
 

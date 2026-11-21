@@ -47,6 +47,12 @@ impl HotkeyService {
             .collect()
     }
 
+    /// Releases every registration (while a new shortcut is being recorded, so pressing the
+    /// current one reaches the recorder instead of starting a capture).
+    pub fn suspend(&mut self) {
+        self.unregister_all();
+    }
+
     pub fn action_for(&self, id: u32) -> Option<Action> {
         self.bindings
             .iter()

@@ -27,6 +27,10 @@ use self::view::{RowLook, Target};
 
 /// Message code telling the tray to reload settings.
 pub const RELOAD_CODE: u32 = 1;
+/// Message code: release the global shortcuts while one is being recorded.
+pub const PAUSE_HOTKEYS_CODE: u32 = 3;
+/// Message code: register the global shortcuts again.
+pub const RESUME_HOTKEYS_CODE: u32 = 4;
 const STATUS_TIME: Duration = Duration::from_millis(2500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +60,8 @@ pub struct PrefsWindow {
     status: Option<(String, Instant)>,
     modifiers: ModifiersState,
     pointer: (f32, f32),
+    /// Whether the tray's global shortcuts are paused for recording.
+    hotkeys_paused: bool,
 }
 
 impl PrefsWindow {
@@ -101,6 +107,7 @@ impl PrefsWindow {
             status: None,
             modifiers: ModifiersState::empty(),
             pointer: (0.0, 0.0),
+            hotkeys_paused: false,
         };
         prefs.window.set_visible(true);
         prefs.window.focus_window();
@@ -175,8 +182,24 @@ impl PrefsWindow {
             }
             _ => return PrefsOutcome::Continue,
         };
+        self.sync_hotkey_pause();
         self.window.request_redraw();
         outcome
+    }
+
+    /// Pauses the tray's global shortcuts while a shortcut is being recorded (otherwise
+    /// pressing the current one would start a capture) and resumes them afterwards.
+    fn sync_hotkey_pause(&mut self) {
+        let recording = matches!(self.focus, Some(Focus::Hotkey { .. }));
+        if recording != self.hotkeys_paused {
+            self.hotkeys_paused = recording;
+            let code = if recording {
+                PAUSE_HOTKEYS_CODE
+            } else {
+                RESUME_HOTKEYS_CODE
+            };
+            let _ = ipc::post_request(ipc::Channel::Tray, code);
+        }
     }
 
     fn pages(&self) -> &'static [Page] {
@@ -449,6 +472,15 @@ impl PrefsWindow {
         };
         let name = naming::render(template, cf_platform::time::local_now(), &example, Some(1));
         format!("e.g. {name}.png\n{hint}")
+    }
+}
+
+impl Drop for PrefsWindow {
+    /// Closing the window while recording must not leave the shortcuts switched off.
+    fn drop(&mut self) {
+        if self.hotkeys_paused {
+            let _ = ipc::post_request(ipc::Channel::Tray, RESUME_HOTKEYS_CODE);
+        }
     }
 }
 

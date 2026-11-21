@@ -64,18 +64,11 @@ fn groups() -> Vec<Vec<Item>> {
             (BUTTON, Command::Undo, "Undo (Ctrl+Z)"),
             (BUTTON, Command::Redo, "Redo (Ctrl+Y)"),
         ],
-        vec![
-            (
-                WIDE,
-                Command::CopyText,
-                "Copy the text in the image (Ctrl+Shift+T)",
-            ),
-            (
-                WIDE,
-                Command::HideSensitive,
-                "Hide emails, IPs, numbers, keys (Ctrl+Shift+R)",
-            ),
-        ],
+        vec![(
+            WIDE,
+            Command::HideSensitive,
+            "Hide emails, IPs, numbers, keys (Ctrl+Shift+R)",
+        )],
         vec![
             (WIDE, Command::Drag, "Drag into another app"),
             (WIDE, Command::Pin, "Pin on screen (Ctrl+P)"),
@@ -242,7 +235,6 @@ fn icon(canvas: &Canvas<'_>, button: &Button, style: Style, s: f32) {
         Command::Redo => glyph(canvas, "↷", (cx, cy), s),
         Command::Copy => label(canvas, "Copy", (cx, cy)),
         Command::Save => label(canvas, "Save", (cx, cy)),
-        Command::CopyText => label(canvas, "Text", (cx, cy)),
         Command::Pin => label(canvas, "Pin", (cx, cy)),
         Command::Drag => label(canvas, "Drag", (cx, cy)),
         Command::HideSensitive => label(canvas, "Hide", (cx, cy)),

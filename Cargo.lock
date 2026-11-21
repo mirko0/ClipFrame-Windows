@@ -282,7 +282,7 @@ dependencies = [
 
 [[package]]
 name = "cf-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cf-core",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "cf-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "png",
  "proptest",
@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "cf-detect"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cf-core",
  "rxing",
@@ -322,7 +322,7 @@ dependencies = [
 
 [[package]]
 name = "cf-platform"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cf-core",
  "dirs",
@@ -334,7 +334,7 @@ dependencies = [
 
 [[package]]
 name = "cf-render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cf-core",
  "raw-window-handle",

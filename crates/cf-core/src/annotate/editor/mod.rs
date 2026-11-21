@@ -155,6 +155,11 @@ impl EditorState {
         self.selected
     }
 
+    /// The topmost annotation under `p` (`slop_scale` widens the grab area when zoomed out).
+    pub fn item_at(&self, p: Vec2, slop_scale: f32) -> Option<usize> {
+        hit::topmost_at(self.doc.items(), p, slop_scale)
+    }
+
     /// Whether text is being typed (keys should go to the text).
     pub const fn is_typing(&self) -> bool {
         self.draft.is_some()

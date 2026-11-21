@@ -252,7 +252,13 @@ All edits go through command objects → unlimited undo/redo.
   time it's needed and cached. Workers report through a channel and wake the event loop
   (`HelperEvent::Wake` → `Editors::on_wake`). Found codes appear as chips (bottom-left)
   showing the content, with *Copy* and — for web links only — *Open*.
-- *Text* (Ctrl+Shift+T) copies the text inside the crop. *Hide* (Ctrl+Shift+R) adds solid
+- Text is read and codes are scanned as soon as the editor opens. With the Select tool,
+  dragging across recognised words selects them (highlighted on the image); a popover or
+  Ctrl+C copies the selection. Clicking a detected code (dashed outline) opens a popover with
+  *Open link* / *Copy link*, or *Copy value* for non-link content. Annotations under the
+  pointer still take priority. (This replaced the bottom-left code chips and the *Text*
+  toolbar button.)
+- Ctrl+Shift+T copies all the text inside the crop. *Hide* (Ctrl+Shift+R) adds solid
   redactions for everything sensitive as **one** undoable step (`Edit::Batch`).
 - Ctrl+Shift+C was the first choice for copying text, but other tools commonly register it
   globally (it was taken on the dev machine), so text uses Ctrl+Shift+T.
@@ -335,7 +341,9 @@ All edits go through command objects → unlimited undo/redo.
   settings and the 7-step setup. Every change is saved at once; the helper then posts
   "reload" to the tray's own message window (`ipc::Channel::Tray`), which re-registers the
   global hotkeys. The shortcut recorder maps winit physical keys through
-  `Key::from_code_name` (W3C code names). *Start with Windows* writes the per-user `Run` key
+  `Key::from_code_name` (W3C code names). While it records, the tray releases its global
+  hotkeys (codes 3/4 on `ipc::Channel::Tray`), so pressing the current shortcut reaches the
+  recorder instead of starting a capture; closing the window resumes them. *Start with Windows* writes the per-user `Run` key
   (`cf_platform::startup`); the folder picker is the standard `IFileOpenDialog`.
 - **Installer and updates** (Velopack, `cf-app/src/updates.rs`): `handle_install_hooks()`
   runs first in `main` (uninstall removes the Run entry; the shortcut gets ClipFrame's

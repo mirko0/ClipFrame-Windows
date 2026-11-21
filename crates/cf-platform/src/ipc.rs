@@ -22,6 +22,9 @@ pub enum Channel {
     Helper,
     /// The tray process (e.g. "settings changed").
     Tray,
+    /// Used only by tests, so they never reach a real, running ClipFrame.
+    #[cfg(test)]
+    Test,
 }
 
 impl Channel {
@@ -29,6 +32,8 @@ impl Channel {
         match self {
             Self::Helper => w!("ClipFrame.CaptureHelper"),
             Self::Tray => w!("ClipFrame.Tray"),
+            #[cfg(test)]
+            Self::Test => w!("ClipFrame.Test"),
         }
     }
 }
@@ -229,10 +234,10 @@ mod tests {
         let received = Rc::new(Cell::new(None));
         let sink = received.clone();
         let window =
-            RequestWindow::create(Channel::Tray, move |code| sink.set(Some(code))).unwrap();
+            RequestWindow::create(Channel::Test, move |code| sink.set(Some(code))).unwrap();
 
         assert!(matches!(
-            post_request(Channel::Tray, 7),
+            post_request(Channel::Test, 7),
             Posted::Sent { .. }
         ));
         pump_until(|| received.get().is_some());
@@ -240,7 +245,7 @@ mod tests {
 
         drop(window);
         assert_eq!(
-            post_request(Channel::Tray, 8),
+            post_request(Channel::Test, 8),
             Posted::NoHelper,
             "window is gone"
         );

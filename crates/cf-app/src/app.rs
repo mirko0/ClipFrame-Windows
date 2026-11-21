@@ -150,6 +150,27 @@ impl App {
         }
     }
 
+    /// A code posted by the capture helper or the installer.
+    fn on_remote(&mut self, code: u32, event_loop: &ActiveEventLoop) {
+        match code {
+            updates::QUIT_CODE => {
+                tracing::info!("asked to quit");
+                event_loop.exit();
+            }
+            prefs::PAUSE_HOTKEYS_CODE => {
+                if let Some(services) = self.services.as_mut() {
+                    services.hotkeys.suspend();
+                }
+            }
+            prefs::RESUME_HOTKEYS_CODE => self.apply_hotkeys(),
+            prefs::RELOAD_CODE => {
+                tracing::debug!("settings changed in the settings window");
+                self.perform(Action::ReloadConfig, event_loop);
+            }
+            _ => {}
+        }
+    }
+
     fn listen_to_helper(&mut self) {
         let proxy = self.proxy.clone();
         let window = RequestWindow::create(ipc::Channel::Tray, move |code| {
@@ -237,16 +258,7 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::Remote(code) => {
-                if code == updates::QUIT_CODE {
-                    tracing::info!("asked to quit");
-                    event_loop.exit();
-                } else if code == prefs::RELOAD_CODE {
-                    tracing::debug!("settings changed in the settings window");
-                    self.perform(Action::ReloadConfig, event_loop);
-                }
-                return;
-            }
+            AppEvent::Remote(code) => return self.on_remote(code, event_loop),
             AppEvent::UpdateReady(ready) => {
                 if let Some(services) = self.services.as_mut() {
                     services.tray.offer_update(&ready.version);

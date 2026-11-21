@@ -1,10 +1,11 @@
 //! The annotation editor: one window per edited capture, in the helper process (it draws
 //! with the helper's GPU device).
 
-mod chips;
 mod command;
 mod export;
 mod icons;
+mod onimage;
+mod popover;
 mod render;
 mod set;
 mod smart;
@@ -88,6 +89,8 @@ pub struct Editor {
     region: Rect,
     /// Set by "Pin"; collected once the editor has closed.
     pinned: Option<Pinned>,
+    /// Text selection and popover on the image.
+    pick: onimage::Pick,
 }
 
 #[derive(Default)]
@@ -140,6 +143,7 @@ impl Editor {
             source: capture.source.clone(),
             region: capture.region,
             pinned: None,
+            pick: onimage::Pick::default(),
         };
         editor.window.set_visible(true);
         editor.window.focus_window();
@@ -241,6 +245,8 @@ impl Editor {
         if self.input.drawing {
             self.state.pointer_move(self.to_image(p));
         }
+        self.image_drag(self.to_image(p));
+        self.popover_hover(p);
         self.window.set_cursor(self.cursor_icon(in_toolbar));
     }
 
@@ -251,19 +257,16 @@ impl Editor {
         let p = self.input.pointer;
         match state {
             ElementState::Pressed => {
-                let (_, height) = self.window_size();
-                let chips = chips::buttons(self.smart.codes(), height, self.scale());
-                if let Some(action) = chips::hit(&chips, p) {
-                    self.on_chip(action);
+                if self.popover_press(p) {
                     return EditorOutcome::Continue;
                 }
                 if let Some(index) = toolbar::hit(&self.buttons(), p) {
                     let command = self.buttons()[index].command;
                     return self.run(gpu, command);
                 }
-                if p.1 >= self.toolbar_height() {
+                let zoom = self.view().zoom;
+                if p.1 >= self.toolbar_height() && !self.image_press(self.to_image(p), zoom) {
                     self.input.drawing = true;
-                    let zoom = self.view().zoom;
                     self.state.pointer_down(self.to_image(p), 1.0 / zoom);
                 }
             }
@@ -271,7 +274,7 @@ impl Editor {
                 self.input.drawing = false;
                 self.state.pointer_up(self.to_image(p));
             }
-            ElementState::Released => {}
+            ElementState::Released => _ = self.image_release(),
         }
         EditorOutcome::Continue
     }
@@ -298,13 +301,17 @@ impl Editor {
             return EditorOutcome::Continue;
         }
         match command {
-            Command::Tool(tool) => self.state.set_tool(tool),
+            Command::Tool(tool) => {
+                self.clear_pick();
+                self.state.set_tool(tool);
+            }
             Command::Undo => _ = self.state.undo(),
             Command::Redo => _ = self.state.redo(),
             Command::Delete => self.state.delete_selected(),
             Command::Commit => self.state.commit_text(),
             Command::NewLine => self.state.new_line(),
             Command::Backspace => self.state.backspace(),
+            Command::Copy if self.copy_selection() => {}
             Command::Copy => {
                 self.export(gpu, true, None);
                 self.say("Copied to the clipboard");
@@ -314,6 +321,7 @@ impl Editor {
             Command::Pin if self.pin(gpu) => return EditorOutcome::Close,
             Command::CopyText => self.want_text(Want::CopyText),
             Command::HideSensitive => self.want_text(Want::Redact),
+            Command::Escape if self.clear_pick() => {}
             Command::Escape if !self.state.escape() => return EditorOutcome::Close,
             _ => {}
         }
@@ -351,6 +359,7 @@ impl Editor {
         {
             render::selection_frame(canvas, item, view.zoom);
         }
+        self.paint_pick(canvas, view.zoom);
         canvas.pop_clip();
         canvas.reset_transform();
         let look = toolbar::Look {
@@ -360,7 +369,7 @@ impl Editor {
             status: self.status.as_ref().map(|(text, _)| text.as_str()),
         };
         toolbar::paint(canvas, &self.buttons(), &look);
-        chips::paint(canvas, self.smart.codes(), self.scale());
+        self.paint_popover(canvas);
     }
 
     /// Fits the shown part of the image (the crop, or all of it while cropping) into the
@@ -439,6 +448,12 @@ impl Editor {
     }
 
     fn cursor_icon(&self, in_toolbar: bool) -> CursorIcon {
+        if !in_toolbar {
+            let zoom = self.view().zoom;
+            if let Some(icon) = self.pick_cursor(self.to_image(self.input.pointer), zoom) {
+                return icon;
+            }
+        }
         match (in_toolbar, self.state.tool()) {
             (true, _) | (false, Tool::Select) => CursorIcon::Default,
             (false, Tool::Text) => CursorIcon::Text,

@@ -18,7 +18,7 @@ fn drawing_a_rect_is_one_undoable_edit() {
     assert_eq!(s.document().items().len(), 1);
     assert!(s.preview().is_none());
     assert!(s.undo());
-    assert!(s.document().items().is_empty());
+    assert_eq!(s.document().items(), []);
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn a_click_with_a_drawing_tool_adds_nothing() {
     let mut s = EditorState::new();
     s.set_tool(Tool::Arrow);
     drag(&mut s, v(10.0, 10.0), v(10.0, 10.0));
-    assert!(s.document().items().is_empty());
+    assert_eq!(s.document().items(), []);
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn select_tool_moves_and_deletes() {
         }
     );
     s.delete_selected();
-    assert!(s.document().items().is_empty());
+    assert_eq!(s.document().items(), []);
     assert!(s.undo());
     assert_eq!(s.document().items().len(), 1);
 }
@@ -109,7 +109,7 @@ fn empty_text_is_dropped_and_escape_reports_nothing_to_do() {
     s.set_tool(Tool::Text);
     s.pointer_down(v(10.0, 10.0), 1.0);
     assert!(s.escape());
-    assert!(s.document().items().is_empty());
+    assert_eq!(s.document().items(), []);
     assert!(!s.escape());
 }
 

@@ -70,7 +70,7 @@ impl Image {
     /// The pixels converted to RGBA (for encoders that need it).
     pub fn to_rgba(&self) -> Vec<u8> {
         let mut out = self.pixels.clone();
-        for px in out.chunks_exact_mut(4) {
+        for px in out.as_chunks_mut::<4>().0 {
             px.swap(0, 2);
         }
         out

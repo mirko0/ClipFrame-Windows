@@ -342,10 +342,10 @@ impl PrefsWindow {
 
     /// Finishes text being typed (clicking elsewhere keeps what was typed).
     fn commit_text(&mut self) {
-        if let Some(Focus::Text { row, text }) = self.focus.take() {
-            if let Some(field) = self.field(row) {
-                self.apply(field, Value::Text(text));
-            }
+        if let Some(Focus::Text { row, text }) = self.focus.take()
+            && let Some(field) = self.field(row)
+        {
+            self.apply(field, Value::Text(text));
         }
     }
 

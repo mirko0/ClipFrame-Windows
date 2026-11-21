@@ -218,10 +218,10 @@ pub fn heading(canvas: &Canvas<'_>, mode: Mode, title: &str, intro: &str, s: f32
     if let Some(block) = canvas.text_sized(title, size * s, true) {
         canvas.draw_text(&block, left, y * s, ink());
     }
-    if !intro.is_empty() {
-        if let Some(block) = canvas.text_wrapped(intro, 15.0 * s, false, width) {
-            canvas.draw_text(&block, left, (y + 48.0) * s, muted());
-        }
+    if !intro.is_empty()
+        && let Some(block) = canvas.text_wrapped(intro, 15.0 * s, false, width)
+    {
+        canvas.draw_text(&block, left, (y + 48.0) * s, muted());
     }
 }
 
@@ -240,10 +240,10 @@ pub fn row(canvas: &Canvas<'_>, mode: Mode, control: RectF, look: &RowLook<'_>, 
     if let Some(block) = canvas.text_wrapped(look.label, 15.0 * s, true, text_width) {
         canvas.draw_text(&block, left, label_y, ink());
     }
-    if !look.hint.is_empty() {
-        if let Some(block) = canvas.text_wrapped(look.hint, 12.5 * s, false, text_width) {
-            canvas.draw_text(&block, left, label_y + 22.0 * s, muted());
-        }
+    if !look.hint.is_empty()
+        && let Some(block) = canvas.text_wrapped(look.hint, 12.5 * s, false, text_width)
+    {
+        canvas.draw_text(&block, left, label_y + 22.0 * s, muted());
     }
     match look.kind {
         Kind::Toggle => toggle(canvas, control, matches!(look.value, Value::Bool(true)), s),
@@ -322,12 +322,12 @@ fn boxed(canvas: &Canvas<'_>, control: RectF, look: &RowLook<'_>, s: f32) {
         return;
     };
     let mut width = inner.w;
-    if let Kind::Folder = look.kind {
-        if let Some(change) = canvas.text_sized("Change…", 13.0 * s, true) {
-            width -= change.width + 12.0 * s;
-            let y = control.y + (control.h - change.height) / 2.0;
-            canvas.draw_text(&change, inner.right() - change.width, y, accent());
-        }
+    if let Kind::Folder = look.kind
+        && let Some(change) = canvas.text_sized("Change…", 13.0 * s, true)
+    {
+        width -= change.width + 12.0 * s;
+        let y = control.y + (control.h - change.height) / 2.0;
+        canvas.draw_text(&change, inner.right() - change.width, y, accent());
     }
     let y = control.y + (control.h - block.height) / 2.0;
     canvas.push_clip(RectF::new(inner.x, control.y, width, control.h));

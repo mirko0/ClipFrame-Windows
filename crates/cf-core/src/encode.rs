@@ -16,7 +16,12 @@ pub struct EncodeError(#[from] png::EncodingError);
 /// # Errors
 /// [`EncodeError`] if the encoder fails (practically only on allocation failure).
 pub fn png(image: &Image) -> Result<Vec<u8>, EncodeError> {
-    let opaque = image.bgra().chunks_exact(4).all(|px| px[3] == 255);
+    let opaque = image
+        .bgra()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|px| px[3] == 255);
     let (color, data) = if opaque {
         (png::ColorType::Rgb, bgra_to_rgb(image.bgra()))
     } else {
@@ -88,8 +93,8 @@ pub fn decode_png(bytes: &[u8]) -> Result<Image, DecodeError> {
 
 fn bgra_to_rgb(bgra: &[u8]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(bgra.len() / 4 * 3);
-    for px in bgra.chunks_exact(4) {
-        rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+    for [b, g, r, _] in bgra.as_chunks::<4>().0 {
+        rgb.extend_from_slice(&[*r, *g, *b]);
     }
     rgb
 }

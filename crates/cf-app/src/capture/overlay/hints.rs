@@ -33,6 +33,6 @@ mod tests {
     fn hint_follows_state() {
         assert!(hint(CaptureMode::Element, false, false).starts_with("Click an element"));
         assert_eq!(hint(CaptureMode::Window, true, false), ADJUST);
-        assert!(hint(CaptureMode::FreeSelect, false, true).is_empty());
+        assert_eq!(hint(CaptureMode::FreeSelect, false, true), "");
     }
 }

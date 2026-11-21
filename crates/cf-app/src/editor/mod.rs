@@ -282,10 +282,12 @@ impl Editor {
             return self.run(gpu, command);
         }
         let plain = !self.input.modifiers.control_key() && !self.input.modifiers.alt_key();
-        if typing && plain && event.state == ElementState::Pressed {
-            if let Some(text) = &event.text {
-                self.state.type_text(text);
-            }
+        if typing
+            && plain
+            && event.state == ElementState::Pressed
+            && let Some(text) = &event.text
+        {
+            self.state.type_text(text);
         }
         EditorOutcome::Continue
     }

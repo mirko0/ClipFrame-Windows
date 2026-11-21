@@ -47,7 +47,9 @@ pub fn scan(image: &Image) -> Vec<Code> {
 fn luma(image: &Image) -> Vec<u8> {
     image
         .bgra()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|px| {
             let (b, g, r) = (u32::from(px[0]), u32::from(px[1]), u32::from(px[2]));
             u8::try_from((r * 299 + g * 587 + b * 114) / 1000).unwrap_or(u8::MAX)
@@ -105,7 +107,7 @@ mod tests {
     #[test]
     fn a_blank_image_has_no_codes() {
         let blank = Image::from_bgra(64, 64, vec![255; 64 * 64 * 4]).expect("sized");
-        assert!(scan(&blank).is_empty());
-        assert!(scan(&Image::transparent(0, 0)).is_empty());
+        assert_eq!(scan(&blank), []);
+        assert_eq!(scan(&Image::transparent(0, 0)), []);
     }
 }

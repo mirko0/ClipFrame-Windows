@@ -132,10 +132,10 @@ impl Tray {
 /// menu opens; only lists file names and reads 24-byte PNG headers).
 pub fn refresh_recent() {
     RECENT.with(|cell| {
-        if let Some(menu) = cell.borrow_mut().as_mut() {
-            if let Err(err) = menu.refresh() {
-                tracing::warn!("could not list recent captures: {err}");
-            }
+        if let Some(menu) = cell.borrow_mut().as_mut()
+            && let Err(err) = menu.refresh()
+        {
+            tracing::warn!("could not list recent captures: {err}");
         }
     });
 }

@@ -70,7 +70,7 @@ fn read_opaque_pixels(bits: *const u8, rect: Rect) -> Image {
     // SAFETY: `bits` points to the DIB section's `len` bytes (32-bpp, width × height), which
     // stays alive until the `DibSection` guard drops after this function returns.
     let mut pixels = unsafe { std::slice::from_raw_parts(bits, len) }.to_vec();
-    for px in pixels.chunks_exact_mut(4) {
+    for px in pixels.as_chunks_mut::<4>().0 {
         px[3] = 255;
     }
     Image::from_bgra(width, height, pixels).unwrap_or_else(|| Image::transparent(width, height))
@@ -238,6 +238,13 @@ mod tests {
     fn captures_opaque_pixels_of_requested_size() {
         let image = capture_rect(Rect::new(0, 0, 64, 32), true).unwrap();
         assert_eq!((image.width(), image.height()), (64, 32));
-        assert!(image.bgra().chunks_exact(4).all(|px| px[3] == 255));
+        assert!(
+            image
+                .bgra()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|px| px[3] == 255)
+        );
     }
 }

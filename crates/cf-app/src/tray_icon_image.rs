@@ -12,7 +12,7 @@ const COLOR: [u8; 4] = [0x4F, 0xA3, 0xFF, 0xFF];
 /// RGBA8 pixels, row-major, `SIZE * SIZE * 4` bytes.
 pub fn rgba() -> Vec<u8> {
     let mut pixels = vec![0u8; SIZE * SIZE * 4];
-    for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         if is_lit(index % SIZE, index / SIZE) {
             pixel.copy_from_slice(&COLOR);
         }

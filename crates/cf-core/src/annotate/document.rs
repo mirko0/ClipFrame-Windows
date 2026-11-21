@@ -210,7 +210,7 @@ mod tests {
         assert!(doc.undo());
         assert_eq!(doc.items(), &[step(1.0), step(2.0)]);
         assert!(doc.undo() && doc.undo() && !doc.undo());
-        assert!(doc.items().is_empty());
+        assert_eq!(doc.items(), []);
         assert!(doc.redo() && doc.redo() && doc.redo() && !doc.redo());
         assert_eq!(doc.items(), &[step(5.0), step(2.0)]);
     }

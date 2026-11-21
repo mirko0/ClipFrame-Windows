@@ -218,7 +218,10 @@ fn register_notifications(paths: &AppPaths) {
     if !icon.exists() {
         let size = u32::try_from(tray_icon_image::SIZE).unwrap_or(32);
         let mut bgra = tray_icon_image::rgba();
-        bgra.chunks_exact_mut(4).for_each(|px| px.swap(0, 2));
+        bgra.as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .for_each(|px| px.swap(0, 2));
         let written = Image::from_bgra(size, size, bgra)
             .context("icon size")
             .and_then(|image| Ok(encode::png(&image)?))

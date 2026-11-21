@@ -29,7 +29,7 @@ Default shortcut: **Alt+Shift+S**. Everything else is in *Settings…* in the tr
 
 ## Build
 
-Requires Rust 1.85+ (MSVC toolchain) on Windows.
+Requires Rust 1.88+ (MSVC toolchain) on Windows.
 
 ```powershell
 cargo run -p cf-app            # debug build, with a console for logs

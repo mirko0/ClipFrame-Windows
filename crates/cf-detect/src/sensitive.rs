@@ -234,8 +234,8 @@ mod tests {
         );
         assert_eq!(kinds(&["(555)", "123-4567", "x"]), [Kind::Number]);
         assert_eq!(kinds(&["4111", "1111", "1111", "1111"]), [Kind::Number]);
-        assert!(kinds(&["on", "2026-11-21", "at", "15:30"]).is_empty());
-        assert!(kinds(&["room", "12"]).is_empty());
+        assert_eq!(kinds(&["on", "2026-11-21", "at", "15:30"]), []);
+        assert_eq!(kinds(&["room", "12"]), []);
     }
 
     #[test]

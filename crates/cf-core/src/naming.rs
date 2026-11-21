@@ -62,13 +62,12 @@ impl Naming {
             &self.template
         };
         let file = |n| format!("{}.png", render(template, time, source, n));
-        if template.contains("{n}") {
-            if let Some(free) = (1..10_000)
+        if template.contains("{n}")
+            && let Some(free) = (1..10_000)
                 .map(|n| dir.join(file(Some(n))))
                 .find(|p| !exists(p))
-            {
-                return free;
-            }
+        {
+            return free;
         }
         unique_path(&dir, &file(None), exists)
     }

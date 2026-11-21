@@ -149,7 +149,7 @@ mod tests {
             .collect();
         assert_eq!(order, [names[1], names[0], names[2]]);
         assert_eq!(excess(&entries, 2).len(), 1);
-        assert!(excess(&entries, 10).is_empty());
+        assert_eq!(excess(&entries, 10), []);
     }
 
     #[test]

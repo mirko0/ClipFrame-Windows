@@ -20,6 +20,7 @@ const RECENT_SHOWN: usize = 10;
 /// Menu layout after the "Recent captures" submenu; `None` is a separator.
 const MENU_LAYOUT: &[Option<(&str, Action)>] = &[
     None,
+    Some(("Settings…", Action::OpenSettings)),
     Some(("Open captures folder", Action::OpenCapturesFolder)),
     Some(("Edit settings file", Action::OpenConfig)),
     Some(("Reload settings", Action::ReloadConfig)),
@@ -36,6 +37,7 @@ thread_local! {
 
 pub struct Tray {
     icon: TrayIcon,
+    menu: Menu,
     items: Vec<(MenuItem, Action)>,
 }
 
@@ -60,7 +62,7 @@ impl Tray {
         let size = u32::try_from(tray_icon_image::SIZE).context("icon size")?;
         let image = Icon::from_rgba(tray_icon_image::rgba(), size, size)?;
         let icon = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
+            .with_menu(Box::new(menu.clone()))
             .with_menu_on_left_click(false)
             .with_tooltip("ClipFrame")
             .with_icon(image)
@@ -73,7 +75,7 @@ impl Tray {
             });
         });
         refresh_recent();
-        Ok(Self { icon, items })
+        Ok(Self { icon, menu, items })
     }
 
     pub fn action_for(&self, id: &MenuId) -> Option<Action> {
@@ -85,6 +87,23 @@ impl Tray {
         fixed.or_else(|| {
             RECENT.with(|cell| cell.borrow().as_ref().and_then(|menu| menu.action_for(id)))
         })
+    }
+
+    /// Adds "Restart to install update" at the top of the menu (once).
+    pub fn offer_update(&mut self, version: &str) {
+        if self.items.iter().any(|(_, a)| *a == Action::InstallUpdate) {
+            return;
+        }
+        let item = MenuItem::new(
+            format!("Restart to install ClipFrame {version}"),
+            true,
+            None,
+        );
+        if let Err(err) = self.menu.prepend(&item) {
+            tracing::warn!("could not offer the update in the menu: {err}");
+            return;
+        }
+        self.items.push((item, Action::InstallUpdate));
     }
 
     /// Shows the capture hotkey in the menu and tooltip, flagging it when registration failed.

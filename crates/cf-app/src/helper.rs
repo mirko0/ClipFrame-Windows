@@ -13,6 +13,7 @@ use cf_core::capture_request::CaptureRequest;
 use cf_core::config::Config;
 use cf_core::encode;
 use cf_core::image::Image;
+use cf_core::state::AppState;
 use cf_platform::ipc::{self, RequestWindow};
 use cf_platform::paths::AppPaths;
 use cf_platform::single_instance::{InstanceError, SingleInstance};
@@ -23,6 +24,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::capture::{CaptureController, Delivery, Waker};
+use crate::prefs::{Mode, PrefsOutcome, PrefsWindow};
 use crate::{settings, tray_icon_image};
 
 /// Command-line flag that starts the helper instead of the tray.
@@ -41,7 +43,7 @@ pub fn run(paths: AppPaths, initial: CaptureRequest) -> anyhow::Result<()> {
         Ok(instance) => instance,
         Err(InstanceError::AlreadyRunning) => {
             // Lost a start-up race against another helper: hand it the request instead.
-            if ipc::post_request(initial.code()) == ipc::Posted::NoHelper {
+            if ipc::post_request(ipc::Channel::Helper, initial.code()) == ipc::Posted::NoHelper {
                 tracing::warn!(?initial, "another helper is starting; request dropped");
             }
             return Ok(());
@@ -72,6 +74,8 @@ struct Helper {
     request_window: Option<RequestWindow>,
     proxy: EventLoopProxy<HelperEvent>,
     initial: Option<CaptureRequest>,
+    /// The settings window or first-run setup, when open.
+    prefs: Option<PrefsWindow>,
 }
 
 impl Helper {
@@ -91,6 +95,7 @@ impl Helper {
             request_window: None,
             proxy,
             initial: Some(initial),
+            prefs: None,
         }
     }
 
@@ -99,7 +104,7 @@ impl Helper {
             register_notifications(&self.paths);
         }
         let proxy = self.proxy.clone();
-        let window = RequestWindow::create(move |code| {
+        let window = RequestWindow::create(ipc::Channel::Helper, move |code| {
             if let Some(request) = CaptureRequest::from_code(code) {
                 // Only fails once the loop has exited, when requests no longer matter.
                 let _ = proxy.send_event(HelperEvent::Request(request));
@@ -119,10 +124,78 @@ impl Helper {
         self.config = settings::load_config(&self.paths.config_file);
         self.keep_alive
             .set_timeout(self.config.performance.keep_gpu_ready.idle_timeout());
-        let delivery = self.delivery();
-        self.capture
-            .request(event_loop, request, &self.config, &delivery);
+        match request {
+            CaptureRequest::Quit => {
+                tracing::info!("asked to quit");
+                self.prefs = None;
+                self.request_window = None;
+                event_loop.exit();
+                return;
+            }
+            CaptureRequest::Settings => self.open_prefs(event_loop, Mode::Settings),
+            CaptureRequest::Onboarding => self.open_prefs(event_loop, Mode::Setup),
+            _ => {
+                let delivery = self.delivery();
+                self.capture
+                    .request(event_loop, request, &self.config, &delivery);
+            }
+        }
         self.track_idle();
+    }
+
+    fn open_prefs(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
+        if let Some(prefs) = &self.prefs {
+            prefs.raise();
+            return;
+        }
+        if mode == Mode::Setup {
+            // Shown once, even when closed early: don't nag on every start.
+            let state = AppState {
+                onboarded: true,
+                ..AppState::load(&self.paths.state_file)
+            };
+            if let Err(err) = state.save(&self.paths.state_file) {
+                tracing::warn!("could not save the setup state: {err}");
+            }
+        }
+        let opened = self.capture.gpu().and_then(|gpu| {
+            PrefsWindow::open(event_loop, gpu, mode, self.config.clone(), &self.paths)
+        });
+        match opened {
+            Ok(prefs) => self.prefs = Some(prefs),
+            Err(err) => tracing::error!("could not open settings: {err:#}"),
+        }
+    }
+
+    /// Routes an event to the settings window; `false` when it isn't for it.
+    fn prefs_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        id: WindowId,
+        event: &WindowEvent,
+    ) -> bool {
+        if self.prefs.as_ref().is_none_or(|p| p.id() != id) {
+            return false;
+        }
+        let Ok(gpu) = self.capture.gpu() else {
+            return true;
+        };
+        let outcome = self
+            .prefs
+            .as_mut()
+            .map_or(PrefsOutcome::Close, |p| p.handle_event(gpu, event));
+        if outcome != PrefsOutcome::Continue {
+            self.prefs = None;
+            tracing::info!("settings closed");
+        }
+        if outcome == PrefsOutcome::CloseAndCapture {
+            self.handle(event_loop, CaptureRequest::Interactive);
+        }
+        true
+    }
+
+    fn is_busy(&self) -> bool {
+        self.capture.is_busy() || self.prefs.is_some()
     }
 
     fn delivery(&self) -> Delivery {
@@ -131,7 +204,7 @@ impl Helper {
 
     /// Starts the exit countdown when the last capture finished, stops it while capturing.
     fn track_idle(&mut self) {
-        if self.capture.is_busy() {
+        if self.is_busy() {
             self.keep_alive.mark_busy();
         } else if !self.keep_alive.is_idle() {
             self.keep_alive.mark_idle(Instant::now());
@@ -166,6 +239,9 @@ impl ApplicationHandler<HelperEvent> for Helper {
             StartCause::ResumeTimeReached { .. } => {
                 let delivery = self.delivery();
                 self.capture.on_timer(event_loop, &self.config, &delivery);
+                if let Some(prefs) = &mut self.prefs {
+                    prefs.on_timer();
+                }
             }
             _ => {}
         }
@@ -181,6 +257,9 @@ impl ApplicationHandler<HelperEvent> for Helper {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.prefs_event(event_loop, id, &event) {
+            return;
+        }
         let delivery = self.delivery();
         self.capture
             .on_window_event(event_loop, id, event, &delivery);
@@ -189,15 +268,20 @@ impl ApplicationHandler<HelperEvent> for Helper {
     /// Exits once idle for the keep-alive period; otherwise sleeps until the next timer.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.track_idle();
-        if !self.capture.is_busy() && self.keep_alive.is_expired(Instant::now()) {
+        if !self.is_busy() && self.keep_alive.is_expired(Instant::now()) {
             self.request_window = None; // new requests now start a fresh helper
             event_loop.exit();
             return;
         }
-        let next = [self.capture.next_deadline(), self.keep_alive.deadline()]
-            .into_iter()
-            .flatten()
-            .min();
+        let prefs = self.prefs.as_ref().and_then(PrefsWindow::deadline);
+        let next = [
+            self.capture.next_deadline(),
+            self.keep_alive.deadline(),
+            prefs,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         event_loop.set_control_flow(next.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
     }
 }

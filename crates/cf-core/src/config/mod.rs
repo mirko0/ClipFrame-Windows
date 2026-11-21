@@ -40,6 +40,28 @@ pub struct Config {
     pub notifications: NotificationsConfig,
     /// Recent captures kept for reopening.
     pub history: HistoryConfig,
+    /// Automatic updates (installed copies only).
+    pub updates: UpdatesConfig,
+}
+
+/// Automatic updates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    /// Check for a newer version when ClipFrame starts.
+    pub check: bool,
+    /// The GitHub repository releases come from, e.g. `https://github.com/owner/ClipFrame`;
+    /// no checks while it's unset.
+    pub repo: Option<String>,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            check: true,
+            repo: None,
+        }
+    }
 }
 
 impl Default for Config {
@@ -54,6 +76,7 @@ impl Default for Config {
             editor: EditorConfig::default(),
             notifications: NotificationsConfig::default(),
             history: HistoryConfig::default(),
+            updates: UpdatesConfig::default(),
         }
     }
 }

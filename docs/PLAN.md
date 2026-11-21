@@ -20,14 +20,19 @@ Screenshots first (v1); video recording later, on the same capture pipeline.
 
 ### Performance budgets (measured in CI benchmarks + manual checks)
 
-| Metric | Target |
-|---|---|
-| Idle RAM (tray only) | < 10 MB private bytes (M0 measured: 5.6 MB private, 14.8 MB working set incl. shared system DLLs) |
-| Idle CPU | 0 % (no wakeups) |
-| Hotkey → frozen overlay visible | < 150 ms (measured, 2 × 1080p, RX 580: ~250 ms new helper, ~100–130 ms warm helper) |
-| Editor interaction | 60 fps+, repaint on change only |
-| Copy-to-clipboard after edit | < 100 ms after debounce for a 4K image |
-| RAM with editor open (single 4K capture) | < 120 MB |
+| Metric | Target | Measured (M7, release build, 2 × 1080p, RX 580) |
+|---|---|---|
+| Idle RAM (tray only) | < 10 MB private bytes | **5.9 MB** private (18.6 MB working set incl. shared DLLs) |
+| Idle CPU | 0 % (no wakeups) | **0 ms** CPU over 10 s idle |
+| Hotkey → frozen overlay visible | < 150 ms | **107 ms** with a running helper; **~400 ms** when the helper starts (GPU init 86–270 ms) ⚠ |
+| Editor interaction | 60 fps+, repaint on change only | repaint on change only |
+| Copy-to-clipboard after edit | < 100 ms after debounce for a 4K image | ~130 ms encode for 1080p (PNG, fast) |
+| RAM with editor open | < 120 MB (4K) | **83 MB** private for a 1080p capture; 57 MB after it closes, 0 once the helper exits |
+| Release executable | — | 3.6 MB (before Velopack's HTTP/TLS client) |
+
+The first capture after the helper has exited misses the latency budget: process start,
+GPU device creation and the first swap chains dominate. *Keep graphics ready* (default 5 min)
+hides it for repeated captures; a pre-started helper at tray start-up is the remaining option.
 
 ---
 
@@ -41,7 +46,7 @@ Screenshots first (v1); video recording later, on the same capture pipeline.
 | 2D vector rendering | Direct2D | Paths, strokes with dash styles, rounded shapes, gradients, anti-aliasing: everything the annotation tools need. |
 | Text | DirectWrite | System fonts, ClearType-quality layout. |
 | Effects | Direct2D built-in effects | Gaussian blur, scale (pixelate), blend modes (highlighter = multiply), masks (spotlight), all on the GPU. |
-| UI chrome (toolbars, settings, onboarding) | Toolbars drawn with Direct2D; settings/onboarding window **to decide in M3** (native Win32 controls vs WebView2) | egui was dropped together with wgpu. |
+| UI chrome (toolbars, settings, onboarding) | All drawn with Direct2D (decided in M7) | egui was dropped together with wgpu. |
 | Screen capture | GDI `BitBlt` in M1 (fast, no start-up cost); Windows.Graphics.Capture / DXGI Duplication later for HDR and video | Same `capture_rect` signature either way. |
 | Win32 / WinRT | `windows` crate (windows-rs) | DPI, UI Automation, clipboard, OCR, toasts, registry. |
 | Global hotkeys | `global-hotkey` | Integrates with the winit loop. Low-level keyboard hook only as fallback. |
@@ -319,6 +324,38 @@ All edits go through command objects → unlimited undo/redo.
   7. Short interactive tutorial: take your first capture
 - Later: winget manifest, optional MSI for enterprise.
 
+### Implementation (M7)
+
+- **Settings window and first-run setup** (`cf-app/src/prefs`): Direct2D like the editor (no
+  UI toolkit), in the capture helper, opened by tray *Settings…* or on first start
+  (`state.json` `onboarded`). One page model (`prefs/model.rs`) binds rows to config fields
+  (toggle, ‹ › choice, shortcut recorder, text, folder picker) and serves both the sidebar
+  settings and the 7-step setup. Every change is saved at once; the helper then posts
+  "reload" to the tray's own message window (`ipc::Channel::Tray`), which re-registers the
+  global hotkeys. The shortcut recorder maps winit physical keys through
+  `Key::from_code_name` (W3C code names). *Start with Windows* writes the per-user `Run` key
+  (`cf_platform::startup`); the folder picker is the standard `IFileOpenDialog`.
+- **Installer and updates** (Velopack, `cf-app/src/updates.rs`): `handle_install_hooks()`
+  runs first in `main` (uninstall removes the Run entry; the shortcut gets ClipFrame's
+  AppUserModelID so toasts are attributed to it). Installed copies check
+  `updates.repo` (a GitHub repository URL) once at tray start-up on a worker thread —
+  no periodic timer — download in the background and offer *Restart to install* in the tray.
+  `installer/package.ps1` builds Setup.exe with `vpk`; `installer/make_icon.py` generates
+  the placeholder icon (also embedded in the exe).
+- **Pack id `ClipFrameApp`**, not `ClipFrame`: Velopack installs to
+  `%LocalAppData%\<packId>` and uninstall deletes that folder, while
+  `%LocalAppData%\ClipFrame` holds the user's logs, history and state.
+- **Quit before uninstall/update**: Velopack's own check didn't see the running tray and
+  helper, so uninstall left the in-use exe behind. The before-uninstall and before-update
+  hooks now post *quit* to both (`ipc::Channel::Tray` code 2, `CaptureRequest::Quit`) and
+  wait up to 5 s for their message windows to disappear.
+- Verified on this machine: one-click install (3 s) → Start-menu and desktop shortcuts,
+  app starts with first-run setup; uninstall (6 s) → shortcuts, install folder, registry
+  keys and Run entry removed, user data kept. `vpk` must match the `velopack` crate version
+  (both `1.3.39-g8d2844f`).
+- Not yet: code signing (SmartScreen warns about unsigned installers), a published
+  GitHub release and an end-to-end update test, winget manifest.
+
 ---
 
 ## 8. Milestones
@@ -332,7 +369,7 @@ All edits go through command objects → unlimited undo/redo.
 | M4 ✅ | Effects | Pixelate/redact, blur, highlighter, global spotlight layer, magnify inset, crop |
 | M5 ✅ | Smart | OCR copy, QR/barcode chips, auto-redact suggestions |
 | M6 ✅ | Workflow | Toasts, pin to screen, history, drag-out, filename templates |
-| M7 | Ship | Velopack installer, onboarding, auto-update, performance pass vs budgets |
+| M7 ✅ | Ship | Velopack installer, onboarding, auto-update, performance pass vs budgets |
 | Later | Video | WGC frames → Media Foundation hardware H.264/HEVC, region/window recording, GIF export |
 
 ---
@@ -342,7 +379,7 @@ All edits go through command objects → unlimited undo/redo.
 - **Helper hand-off race:** a request posted in the instant between the helper deciding to
   exit and destroying its message window is lost (the user presses the hotkey again).
   Rare (sub-millisecond window); fix if it ever shows up in practice.
-- **Settings/onboarding UI toolkit** is open (native Win32 vs WebView2); decide in M3.
+- **Settings/onboarding UI toolkit**: decided in M7 — Direct2D, like the editor.
 - **UIA latency** in heavy pages: hit-tests can take tens of ms. They run on a background
   thread and stale queries are dropped; a per-capture element cache is still open.
 - **Chromium accessibility** switches on at the first UIA query, so the very first hover

@@ -19,6 +19,8 @@ pub mod drag;
 #[cfg(windows)]
 pub mod focus;
 #[cfg(windows)]
+pub mod folder_picker;
+#[cfg(windows)]
 pub mod foreground;
 #[cfg(windows)]
 pub mod ipc;
@@ -30,6 +32,8 @@ pub mod ocr;
 pub mod screen_capture;
 #[cfg(windows)]
 pub mod single_instance;
+#[cfg(windows)]
+pub mod startup;
 #[cfg(windows)]
 pub mod time;
 #[cfg(windows)]

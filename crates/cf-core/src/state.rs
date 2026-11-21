@@ -16,6 +16,8 @@ use crate::geometry::Rect;
 pub struct AppState {
     /// The region of the most recent capture.
     pub last_region: Option<Rect>,
+    /// Whether the first-run setup has been shown.
+    pub onboarded: bool,
 }
 
 impl AppState {
@@ -52,6 +54,7 @@ mod tests {
         let path = dir.path().join("sub").join("state.json");
         let state = AppState {
             last_region: Some(Rect::new(-1920, 10, 300, 200)),
+            onboarded: true,
         };
 
         state.save(&path).unwrap();

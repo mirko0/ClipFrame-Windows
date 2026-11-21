@@ -10,7 +10,9 @@ use crate::helper;
 
 /// Hands `request` to the capture helper, starting it if needed.
 pub fn request(request: CaptureRequest) {
-    if let ipc::Posted::Sent { pid, foreground } = ipc::post_request(request.code()) {
+    if let ipc::Posted::Sent { pid, foreground } =
+        ipc::post_request(ipc::Channel::Helper, request.code())
+    {
         if !foreground {
             tracing::warn!(pid, "could not grant the capture helper foreground rights");
         }

@@ -16,6 +16,12 @@ pub enum CaptureRequest {
     RepeatLast,
     /// Open the `n`-th most recent capture (0 = newest) in the editor.
     OpenRecent(u8),
+    /// Open the settings window.
+    Settings,
+    /// Open the first-run setup.
+    Onboarding,
+    /// Exit now (before the app is uninstalled or updated).
+    Quit,
 }
 
 impl CaptureRequest {
@@ -24,6 +30,9 @@ impl CaptureRequest {
         match self {
             Self::Interactive => 1,
             Self::RepeatLast => 2,
+            Self::Settings => 3,
+            Self::Onboarding => 4,
+            Self::Quit => 5,
             Self::OpenRecent(n) => RECENT_BASE + u32::from(n),
         }
     }
@@ -33,6 +42,9 @@ impl CaptureRequest {
         match code {
             1 => Some(Self::Interactive),
             2 => Some(Self::RepeatLast),
+            3 => Some(Self::Settings),
+            4 => Some(Self::Onboarding),
+            5 => Some(Self::Quit),
             c if (RECENT_BASE..RECENT_BASE + u32::from(MAX_RECENT)).contains(&c) => {
                 u8::try_from(c - RECENT_BASE).ok().map(Self::OpenRecent)
             }
@@ -45,6 +57,9 @@ impl CaptureRequest {
         match self {
             Self::Interactive => "interactive".into(),
             Self::RepeatLast => "repeat-last".into(),
+            Self::Settings => "settings".into(),
+            Self::Onboarding => "onboarding".into(),
+            Self::Quit => "quit".into(),
             Self::OpenRecent(n) => format!("{RECENT_ARG}{n}"),
         }
     }
@@ -54,6 +69,9 @@ impl CaptureRequest {
         match arg {
             "interactive" => Some(Self::Interactive),
             "repeat-last" => Some(Self::RepeatLast),
+            "settings" => Some(Self::Settings),
+            "onboarding" => Some(Self::Onboarding),
+            "quit" => Some(Self::Quit),
             _ => arg
                 .strip_prefix(RECENT_ARG)?
                 .parse::<u8>()
@@ -68,9 +86,12 @@ impl CaptureRequest {
 mod tests {
     use super::*;
 
-    const ALL: [CaptureRequest; 4] = [
+    const ALL: [CaptureRequest; 7] = [
         CaptureRequest::Interactive,
+        CaptureRequest::Quit,
         CaptureRequest::RepeatLast,
+        CaptureRequest::Settings,
+        CaptureRequest::Onboarding,
         CaptureRequest::OpenRecent(0),
         CaptureRequest::OpenRecent(MAX_RECENT - 1),
     ];

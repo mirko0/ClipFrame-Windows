@@ -1,8 +1,8 @@
-//! Waking the capture helper process from the tray process.
+//! Messages between the tray and capture helper processes.
 //!
-//! The helper owns a hidden message-only window with a fixed class name. The tray finds it
-//! with `FindWindowExW` and posts a request code to it — no pipes, threads or polling, and
-//! the helper's existing event loop receives the message for free.
+//! Each side owns a hidden message-only window with a fixed class name ([`Channel`]). The
+//! other side finds it with `FindWindowExW` and posts a code to it — no pipes, threads or
+//! polling, and the receiver's existing event loop gets the message for free.
 
 use windows::Win32::Foundation::{GetLastError, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -15,7 +15,23 @@ use windows::core::{PCWSTR, w};
 
 /// The message carrying a request code in `WPARAM`.
 const REQUEST_MESSAGE: u32 = WM_APP + 1;
-const CLASS_NAME: PCWSTR = w!("ClipFrame.CaptureHelper");
+/// Which process a message is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// The capture helper (capture, editor and settings requests).
+    Helper,
+    /// The tray process (e.g. "settings changed").
+    Tray,
+}
+
+impl Channel {
+    const fn class_name(self) -> PCWSTR {
+        match self {
+            Self::Helper => w!("ClipFrame.CaptureHelper"),
+            Self::Tray => w!("ClipFrame.Tray"),
+        }
+    }
+}
 /// `ERROR_CLASS_ALREADY_EXISTS` from `winerror.h`.
 const CLASS_ALREADY_EXISTS: u32 = 1410;
 
@@ -38,18 +54,21 @@ impl std::fmt::Debug for RequestWindow {
 }
 
 impl RequestWindow {
-    /// Creates the window; `on_request` runs for every posted request code.
+    /// Creates the receiving window for `channel`; `on_request` runs for every posted code.
     ///
     /// # Errors
     /// When the window class or window cannot be created.
-    pub fn create(on_request: impl Fn(u32) + 'static) -> windows::core::Result<Self> {
-        register_class()?;
+    pub fn create(
+        channel: Channel,
+        on_request: impl Fn(u32) + 'static,
+    ) -> windows::core::Result<Self> {
+        register_class(channel)?;
         // SAFETY: the class was registered above; HWND_MESSAGE makes the window
         // message-only (invisible, never enumerated). It is destroyed in Drop.
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
-                CLASS_NAME,
+                channel.class_name(),
                 None,
                 WINDOW_STYLE(0),
                 0,
@@ -81,14 +100,14 @@ impl Drop for RequestWindow {
     }
 }
 
-fn register_class() -> windows::core::Result<()> {
+fn register_class(channel: Channel) -> windows::core::Result<()> {
     // SAFETY: GetModuleHandleW(None) returns this executable's module handle.
     let instance = unsafe { GetModuleHandleW(None)? };
     let class = WNDCLASSEXW {
         cbSize: u32::try_from(size_of::<WNDCLASSEXW>()).unwrap_or(0),
         lpfnWndProc: Some(window_proc),
         hInstance: instance.into(),
-        lpszClassName: CLASS_NAME,
+        lpszClassName: channel.class_name(),
         ..Default::default()
     };
     // SAFETY: `class` is fully initialised; the name and procedure are 'static.
@@ -136,13 +155,14 @@ pub enum Posted {
     },
 }
 
-/// Posts `code` to a running helper.
+/// Posts `code` to the running process behind `channel`.
 ///
 /// First passes on the right to take the foreground (the tray just received the hotkey, the
 /// helper did not), so the overlay can get keyboard focus.
-pub fn post_request(code: u32) -> Posted {
+pub fn post_request(channel: Channel, code: u32) -> Posted {
+    let class = channel.class_name();
     // SAFETY: searching message-only windows by a constant class name.
-    let Ok(hwnd) = (unsafe { FindWindowExW(Some(HWND_MESSAGE), None, CLASS_NAME, None) }) else {
+    let Ok(hwnd) = (unsafe { FindWindowExW(Some(HWND_MESSAGE), None, class, None) }) else {
         return Posted::NoHelper;
     };
     let mut pid = 0;
@@ -163,6 +183,12 @@ pub fn post_request(code: u32) -> Posted {
     } else {
         Posted::NoHelper
     }
+}
+
+/// Whether the process behind `channel` is running (its message window exists).
+pub fn is_running(channel: Channel) -> bool {
+    // SAFETY: searching message-only windows by a constant class name.
+    unsafe { FindWindowExW(Some(HWND_MESSAGE), None, channel.class_name(), None) }.is_ok()
 }
 
 /// Lets process `pid` bring its windows to the foreground (call from the process that
@@ -202,13 +228,21 @@ mod tests {
     fn posted_request_reaches_the_window_and_stops_after_drop() {
         let received = Rc::new(Cell::new(None));
         let sink = received.clone();
-        let window = RequestWindow::create(move |code| sink.set(Some(code))).unwrap();
+        let window =
+            RequestWindow::create(Channel::Tray, move |code| sink.set(Some(code))).unwrap();
 
-        assert!(matches!(post_request(7), Posted::Sent { .. }));
+        assert!(matches!(
+            post_request(Channel::Tray, 7),
+            Posted::Sent { .. }
+        ));
         pump_until(|| received.get().is_some());
         assert_eq!(received.get(), Some(7));
 
         drop(window);
-        assert_eq!(post_request(8), Posted::NoHelper, "window is gone");
+        assert_eq!(
+            post_request(Channel::Tray, 8),
+            Posted::NoHelper,
+            "window is gone"
+        );
     }
 }

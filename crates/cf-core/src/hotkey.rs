@@ -100,6 +100,30 @@ impl Key {
         matches!(self, Self::Letter(_) | Self::Digit(_) | Self::Space)
     }
 
+    /// The key for a W3C UI Events `code` name (the inverse of [`Self::code_name`]); also what
+    /// winit's physical key codes print as. `None` for keys a hotkey can't use.
+    pub fn from_code_name(code: &str) -> Option<Self> {
+        if let Some(letter) = code.strip_prefix("Key") {
+            let mut chars = letter.chars();
+            return match (chars.next(), chars.next()) {
+                (Some(c), None) if c.is_ascii_uppercase() => Some(Self::Letter(c)),
+                _ => None,
+            };
+        }
+        if let Some(digit) = code.strip_prefix("Digit") {
+            return digit
+                .parse::<u8>()
+                .ok()
+                .filter(|d| *d <= 9)
+                .map(Self::Digit);
+        }
+        NAMED_KEYS
+            .iter()
+            .find(|(_, name, _)| *name == code)
+            .map(|(key, ..)| *key)
+            .or_else(|| parse_function(&code.to_ascii_lowercase()))
+    }
+
     /// The W3C UI Events `code` name, e.g. `KeyA`, `Digit1`, `F5`, `PrintScreen`.
     pub fn code_name(self) -> String {
         match self {
@@ -283,6 +307,23 @@ mod tests {
 
     fn parse(s: &str) -> Result<Hotkey, HotkeyParseError> {
         s.parse()
+    }
+
+    #[test]
+    fn code_names_round_trip() {
+        for key in [
+            Key::Letter('Q'),
+            Key::Digit(7),
+            Key::Function(12),
+            Key::PrintScreen,
+            Key::PageDown,
+            Key::Space,
+        ] {
+            assert_eq!(Key::from_code_name(&key.code_name()), Some(key));
+        }
+        for unusable in ["ShiftLeft", "KeyAB", "Digit10", "F25", "Enter", ""] {
+            assert_eq!(Key::from_code_name(unusable), None, "{unusable}");
+        }
     }
 
     #[test]

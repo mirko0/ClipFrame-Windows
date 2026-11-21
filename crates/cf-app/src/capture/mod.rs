@@ -61,6 +61,17 @@ impl CaptureController {
         }
     }
 
+    /// The GPU device, created on first use.
+    ///
+    /// # Errors
+    /// When Direct3D / Direct2D can't be initialised.
+    pub fn gpu(&mut self) -> anyhow::Result<&Gpu> {
+        if self.gpu.is_none() {
+            self.gpu = Some(Gpu::new().context("initialising the GPU")?);
+        }
+        self.gpu.as_ref().context("GPU unavailable")
+    }
+
     /// Whether an overlay or editor is open or a delayed capture is pending.
     pub fn is_busy(&self) -> bool {
         self.overlay.is_some()
@@ -181,6 +192,8 @@ impl CaptureController {
             CaptureRequest::OpenRecent(index) => {
                 self.open_recent(event_loop, usize::from(index), delivery)
             }
+            // Handled by the helper (they aren't captures).
+            CaptureRequest::Settings | CaptureRequest::Onboarding | CaptureRequest::Quit => Ok(()),
         };
         if let Err(err) = result {
             tracing::error!("capture failed: {err:#}");
@@ -310,6 +323,7 @@ impl CaptureController {
     fn remember(&self, region: Rect) {
         let state = AppState {
             last_region: Some(region),
+            ..AppState::load(&self.state_file)
         };
         if let Err(err) = state.save(&self.state_file) {
             tracing::warn!("could not save last region: {err}");

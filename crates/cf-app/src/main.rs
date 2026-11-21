@@ -15,9 +15,11 @@ mod helper_client;
 mod hotkeys;
 mod logging;
 mod pin;
+mod prefs;
 mod settings;
 mod tray;
 mod tray_icon_image;
+mod updates;
 
 use std::process::ExitCode;
 
@@ -56,6 +58,8 @@ impl Role {
 }
 
 fn main() -> ExitCode {
+    // First: during install, update and uninstall Velopack runs a hook and exits here.
+    updates::handle_install_hooks();
     let role = Role::from_args(std::env::args().skip(1));
     let paths = match AppPaths::resolve() {
         Ok(paths) => paths,

@@ -31,6 +31,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 tray-icon = "0.26"
+velopack = "=1.3.39-g8d2844f"
 windows = "0.62"
 windows-core = "0.62"
 windows-numerics = "0.3"

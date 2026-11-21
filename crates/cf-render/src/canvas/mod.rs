@@ -212,22 +212,28 @@ impl<'a> Canvas<'a> {
 
     /// Lays out `text` in the surface's UI font.
     pub fn text(&self, text: &str) -> Option<TextBlock> {
-        self.layout(text, &self.kit.ui_text)
+        self.layout(text, &self.kit.ui_text, f32::MAX)
     }
 
     /// Lays out `text` (line breaks allowed) at `px` pixels, bold or regular.
     pub fn text_sized(&self, text: &str, px: f32, bold: bool) -> Option<TextBlock> {
         let format = self.kit.text_format(self.gpu, px, bold).ok()?;
-        self.layout(text, &format)
+        self.layout(text, &format, f32::MAX)
     }
 
-    fn layout(&self, text: &str, format: &IDWriteTextFormat) -> Option<TextBlock> {
+    /// Lays out `text` at `px` pixels, wrapping words to fit `width`.
+    pub fn text_wrapped(&self, text: &str, px: f32, bold: bool, width: f32) -> Option<TextBlock> {
+        let format = self.kit.text_format(self.gpu, px, bold).ok()?;
+        self.layout(text, &format, width.max(1.0))
+    }
+
+    fn layout(&self, text: &str, format: &IDWriteTextFormat, width: f32) -> Option<TextBlock> {
         let wide: Vec<u16> = text.encode_utf16().collect();
         // SAFETY: `wide` outlives the call; the format is valid.
         let layout = unsafe {
             self.gpu
                 .dwrite
-                .CreateTextLayout(&wide, format, f32::MAX, f32::MAX)
+                .CreateTextLayout(&wide, format, width, f32::MAX)
         }
         .ok()?;
         let mut metrics = DWRITE_TEXT_METRICS::default();

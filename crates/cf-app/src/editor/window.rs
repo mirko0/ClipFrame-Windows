@@ -33,9 +33,11 @@ pub fn create(
         work_area.y + (work_area.height - size.height as i32) / 2,
     );
     window.set_outer_position(position);
+    let narrowest = toolbar::narrowest(scale);
+    let tallest = toolbar::height(&toolbar::layout(scale, narrowest), scale);
     window.set_min_inner_size(Some(PhysicalSize::new(
-        to_px(toolbar::min_width(scale)),
-        to_px((toolbar::HEIGHT + 120.0) * scale),
+        to_px(narrowest),
+        to_px(tallest + 120.0 * scale),
     )));
     Ok(window)
 }
@@ -50,20 +52,22 @@ pub fn scale_of(window: &Window) -> f32 {
 fn window_size(image: (u32, u32), scale: f32, work_area: Rect) -> PhysicalSize<u32> {
     let chrome = 2.0 * MARGIN * scale;
     #[allow(clippy::cast_precision_loss)] // image and screen sizes
-    let (want_w, want_h) = (
-        image.0 as f32 + chrome,
-        image.1 as f32 + chrome + toolbar::HEIGHT * scale,
-    );
-    #[allow(clippy::cast_precision_loss)]
     let (max_w, max_h) = (
         work_area.width as f32 * MAX_SHARE,
         work_area.height as f32 * MAX_SHARE,
     );
-    let min_w = toolbar::min_width(scale);
-    PhysicalSize::new(
-        to_px(want_w.max(min_w).min(max_w.max(min_w))),
-        to_px(want_h.max(300.0 * scale).min(max_h)),
-    )
+    // Room for the toolbar on one row when the screen allows, else it wraps.
+    let floor = toolbar::full_width(scale)
+        .min(max_w)
+        .max(toolbar::narrowest(scale));
+    #[allow(clippy::cast_precision_loss)]
+    let width = (image.0 as f32 + chrome).max(floor).min(max_w.max(floor));
+    let bar = toolbar::height(&toolbar::layout(scale, width), scale);
+    #[allow(clippy::cast_precision_loss)]
+    let height = (image.1 as f32 + chrome + bar)
+        .max(300.0 * scale)
+        .min(max_h);
+    PhysicalSize::new(to_px(width), to_px(height))
 }
 
 fn work_area_near(near: Rect) -> Rect {
@@ -89,7 +93,7 @@ mod tests {
     fn small_images_get_room_for_the_toolbar_and_large_ones_are_capped() {
         let work = Rect::new(0, 0, 2000, 1000);
         let small = window_size((100, 50), 1.0, work);
-        assert!(small.width >= to_px(toolbar::min_width(1.0)));
+        assert!(small.width >= to_px(toolbar::full_width(1.0)));
         assert_eq!(small.height, 300);
         let large = window_size((5000, 5000), 1.0, work);
         assert_eq!((large.width, large.height), (1800, 900));

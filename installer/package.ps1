@@ -3,10 +3,10 @@
     Builds ClipFrame's Velopack installer (Setup.exe), delta packages and release feed.
 
 .DESCRIPTION
-    Needs the vpk tool:  dotnet tool install -g vpk   (requires the .NET 8 SDK).
-    Output goes to installer\Releases. Publishing to GitHub is a separate, explicit step:
-        vpk upload github --repoUrl https://github.com/<owner>/<repo> --publish --releaseName "ClipFrame <version>" --tag v<version> --token <token>
-    (vpk download github first, so the new release gets delta updates from the previous one.)
+    Needs the vpk tool:  dotnet tool install -g vpk --version <velopack crate version>
+    (requires the .NET 8 SDK). Output goes to installer\Releases.
+    Releases are normally published by .github/workflows/release.yml when a v<version> tag
+    is pushed; it also downloads the previous release first so updates can be deltas.
 
 .EXAMPLE
     .\installer\package.ps1

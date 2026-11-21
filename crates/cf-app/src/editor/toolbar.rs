@@ -40,48 +40,109 @@ pub struct Button {
     pub label: &'static str,
 }
 
-/// Lays the buttons out left to right at UI `scale`.
-pub fn layout(scale: f32) -> Vec<Button> {
-    let mut row = Row::new(scale);
-    for (tool, label) in TOOLS {
-        row.push(BUTTON, Command::Tool(tool), label);
-    }
-    row.gap();
-    for color in COLORS {
-        row.push(SWATCH, Command::Color(color), "Colour (1–8)");
-    }
-    row.gap();
-    row.push(BUTTON, Command::CycleWidth, "Thickness / strength ([ ])");
-    row.push(BUTTON, Command::CycleDash, "Line style (D)");
-    row.push(BUTTON, Command::ToggleFill, "Fill shapes (F)");
-    row.push(WIDE, Command::CycleOpacity, "Opacity (O)");
-    row.gap();
-    row.push(BUTTON, Command::Undo, "Undo (Ctrl+Z)");
-    row.push(BUTTON, Command::Redo, "Redo (Ctrl+Y)");
-    row.gap();
-    row.push(
-        WIDE,
-        Command::CopyText,
-        "Copy the text in the image (Ctrl+Shift+T)",
-    );
-    row.push(
-        WIDE,
-        Command::HideSensitive,
-        "Hide emails, IPs, numbers, keys (Ctrl+Shift+R)",
-    );
-    row.gap();
-    row.push(WIDE, Command::Drag, "Drag into another app");
-    row.push(WIDE, Command::Pin, "Pin on screen (Ctrl+P)");
-    row.push(WIDE, Command::Copy, "Copy image (Ctrl+C)");
-    row.push(WIDE, Command::Save, "Save as new file (Ctrl+S)");
-    row.buttons
+/// One item: its width at 100 % scaling, command and tooltip.
+type Item = (f32, Command, &'static str);
+
+/// The toolbar's groups, left to right. A group never splits across rows.
+fn groups() -> Vec<Vec<Item>> {
+    vec![
+        TOOLS
+            .iter()
+            .map(|&(tool, label)| (BUTTON, Command::Tool(tool), label))
+            .collect(),
+        COLORS
+            .iter()
+            .map(|&c| (SWATCH, Command::Color(c), "Colour (1–8)"))
+            .collect(),
+        vec![
+            (BUTTON, Command::CycleWidth, "Thickness / strength ([ ])"),
+            (BUTTON, Command::CycleDash, "Line style (D)"),
+            (BUTTON, Command::ToggleFill, "Fill shapes (F)"),
+            (WIDE, Command::CycleOpacity, "Opacity (O)"),
+        ],
+        vec![
+            (BUTTON, Command::Undo, "Undo (Ctrl+Z)"),
+            (BUTTON, Command::Redo, "Redo (Ctrl+Y)"),
+        ],
+        vec![
+            (
+                WIDE,
+                Command::CopyText,
+                "Copy the text in the image (Ctrl+Shift+T)",
+            ),
+            (
+                WIDE,
+                Command::HideSensitive,
+                "Hide emails, IPs, numbers, keys (Ctrl+Shift+R)",
+            ),
+        ],
+        vec![
+            (WIDE, Command::Drag, "Drag into another app"),
+            (WIDE, Command::Pin, "Pin on screen (Ctrl+P)"),
+            (WIDE, Command::Copy, "Copy image (Ctrl+C)"),
+            (WIDE, Command::Save, "Save as new file (Ctrl+S)"),
+        ],
+    ]
 }
 
-/// Total width the toolbar needs at `scale`.
-pub fn min_width(scale: f32) -> f32 {
-    layout(scale)
+/// Width of a group at `scale`, without surrounding gaps.
+fn group_width(group: &[Item], scale: f32) -> f32 {
+    let items: f32 = group.iter().map(|(w, ..)| w).sum();
+    #[allow(clippy::cast_precision_loss)] // a handful of items
+    let gaps = group.len().saturating_sub(1) as f32 * GAP;
+    (items + gaps) * scale
+}
+
+/// Lays the buttons out in rows that fit `width` window pixels at UI `scale`, wrapping whole
+/// groups onto a new row when the window is too narrow (e.g. at 175 % scaling).
+pub fn layout(scale: f32, width: f32) -> Vec<Button> {
+    let mut buttons = Vec::new();
+    let left = GROUP_GAP * scale;
+    let (mut cursor, mut row) = (left, 0.0_f32);
+    for group in groups() {
+        let needed = group_width(&group, scale);
+        if cursor > left && cursor + needed > width - left {
+            row += 1.0;
+            cursor = left;
+        }
+        for (size, command, label) in group {
+            let (wide, tall) = (size * scale, size.min(BUTTON) * scale);
+            let top = row * HEIGHT * scale + (HEIGHT * scale - tall) / 2.0;
+            buttons.push(Button {
+                rect: RectF::new(cursor, top, wide, tall),
+                command,
+                label,
+            });
+            cursor += wide + GAP * scale;
+        }
+        cursor += (GROUP_GAP - GAP) * scale;
+    }
+    buttons
+}
+
+/// Height of the toolbar (all its rows) for `buttons`.
+pub fn height(buttons: &[Button], scale: f32) -> f32 {
+    let rows = buttons
+        .iter()
+        .map(|b| (b.rect.y / (HEIGHT * scale)).floor())
+        .fold(0.0_f32, f32::max);
+    (rows + 1.0) * HEIGHT * scale
+}
+
+/// Width the toolbar needs to fit on one row at `scale`.
+pub fn full_width(scale: f32) -> f32 {
+    layout(scale, f32::MAX)
         .last()
         .map_or(0.0, |b| b.rect.right() + GROUP_GAP * scale)
+}
+
+/// The narrowest window that still shows every group (the widest group on its own row).
+pub fn narrowest(scale: f32) -> f32 {
+    groups()
+        .iter()
+        .map(|g| group_width(g, scale))
+        .fold(0.0, f32::max)
+        + 2.0 * GROUP_GAP * scale
 }
 
 /// The button under `(x, y)`.
@@ -90,37 +151,6 @@ pub fn hit(buttons: &[Button], (x, y): (f32, f32)) -> Option<usize> {
         let r = b.rect;
         x >= r.x && x < r.right() && y >= r.y && y < r.bottom()
     })
-}
-
-struct Row {
-    scale: f32,
-    x: f32,
-    buttons: Vec<Button>,
-}
-
-impl Row {
-    fn new(scale: f32) -> Self {
-        Self {
-            scale,
-            x: GROUP_GAP * scale,
-            buttons: Vec::new(),
-        }
-    }
-
-    fn push(&mut self, width: f32, command: Command, label: &'static str) {
-        let (w, h) = (width * self.scale, width.min(BUTTON) * self.scale);
-        let y = (HEIGHT * self.scale - h) / 2.0;
-        self.buttons.push(Button {
-            rect: RectF::new(self.x, y, w, h),
-            command,
-            label,
-        });
-        self.x += w + GAP * self.scale;
-    }
-
-    fn gap(&mut self) {
-        self.x += (GROUP_GAP - GAP) * self.scale;
-    }
 }
 
 /// What the toolbar shows as active, besides hover.
@@ -135,7 +165,7 @@ pub struct Look<'a> {
 pub fn paint(canvas: &Canvas<'_>, buttons: &[Button], look: &Look<'_>) {
     let s = look.scale;
     let (w, _) = canvas.size();
-    canvas.fill_rect(RectF::new(0.0, 0.0, w, HEIGHT * s), bar());
+    canvas.fill_rect(RectF::new(0.0, 0.0, w, height(buttons, s)), bar());
     for (index, button) in buttons.iter().enumerate() {
         let active = is_active(button.command, look.state);
         if active || look.hover == Some(index) {
@@ -149,10 +179,11 @@ pub fn paint(canvas: &Canvas<'_>, buttons: &[Button], look: &Look<'_>) {
         .and_then(|i| buttons.get(i))
         .map(|b| b.label)
         .or(look.status);
-    if let Some(block) = note.and_then(|text| canvas.text(text)) {
-        let x = buttons.last().map_or(0.0, |b| b.rect.right()) + GROUP_GAP * s;
-        let y = (HEIGHT * s - block.height) / 2.0;
-        canvas.draw_text(&block, x, y, muted());
+    // The note goes after the last button, on its row.
+    if let (Some(block), Some(last)) = (note.and_then(|text| canvas.text(text)), buttons.last()) {
+        let row_top = (last.rect.y / (HEIGHT * s)).floor() * HEIGHT * s;
+        let y = row_top + (HEIGHT * s - block.height) / 2.0;
+        canvas.draw_text(&block, last.rect.right() + GROUP_GAP * s, y, muted());
     }
 }
 
@@ -245,7 +276,7 @@ mod tests {
 
     #[test]
     fn buttons_do_not_overlap_and_are_hit_by_position() {
-        let buttons = layout(1.5);
+        let buttons = layout(1.5, f32::MAX);
         for pair in buttons.windows(2) {
             assert!(pair[0].rect.right() <= pair[1].rect.x);
         }
@@ -253,8 +284,41 @@ mod tests {
         let inside = (first.x + 1.0, first.y + 1.0);
         assert_eq!(hit(&buttons, inside), Some(0));
         assert_eq!(hit(&buttons, (0.0, 0.0)), None);
-        assert!(min_width(1.0) > 600.0);
+        assert!(
+            (height(&buttons, 1.5) - HEIGHT * 1.5).abs() < 0.01,
+            "one row"
+        );
         // Fits a 1920-pixel-wide screen at 150 % scaling.
-        assert!(min_width(1.5) <= 1920.0, "toolbar is {} px", min_width(1.5));
+        assert!(
+            full_width(1.5) <= 1920.0,
+            "toolbar is {} px",
+            full_width(1.5)
+        );
+    }
+
+    #[test]
+    fn narrow_windows_wrap_whole_groups_onto_more_rows() {
+        let scale = 2.0; // 200 % on a 1920-pixel screen
+        let width = 1920.0 * 0.9;
+        let buttons = layout(scale, width);
+        assert!(
+            buttons.iter().all(|b| b.rect.right() <= width),
+            "nothing runs off"
+        );
+        let rows = height(&buttons, scale) / (HEIGHT * scale);
+        assert!(rows >= 2.0, "wraps at 200 %");
+        // Each group stays on one row: the colour swatches share a top edge.
+        let swatches: Vec<_> = buttons
+            .iter()
+            .filter(|b| matches!(b.command, Command::Color(_)))
+            .map(|b| b.rect.y)
+            .collect();
+        assert!(swatches.windows(2).all(|w| (w[0] - w[1]).abs() < 0.01));
+        let at_narrowest = layout(scale, narrowest(scale));
+        assert!(
+            at_narrowest
+                .iter()
+                .all(|b| b.rect.right() <= narrowest(scale))
+        );
     }
 }

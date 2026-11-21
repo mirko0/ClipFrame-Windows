@@ -168,7 +168,9 @@ All edits go through command objects → unlimited undo/redo.
   annotation renderer draws on screen (with a view transform) and for export
   (`cf_render::render_to_image`, read back from a CPU-readable bitmap), so the copied/saved
   image matches the screen exactly.
-- The toolbar is drawn with Direct2D as well — no UI toolkit in the editor.
+- The toolbar is drawn with Direct2D as well — no UI toolkit in the editor. Its button groups
+  wrap onto more rows when the window is narrower than one row (high display scaling); a
+  group never splits.
 - After an interactive capture the image is delivered (clipboard/save) immediately, then the
   editor opens (`editor.open_after_capture`, default on). Edits re-copy after 300 ms
   (`clipboard.update_on_edit`); Ctrl+C copies, Ctrl+S saves a new file (then overwrites it).
@@ -353,6 +355,10 @@ All edits go through command objects → unlimited undo/redo.
   app starts with first-run setup; uninstall (6 s) → shortcuts, install folder, registry
   keys and Run entry removed, user data kept. `vpk` must match the `velopack` crate version
   (both `1.3.39-g8d2844f`).
+- **Publishing**: pushing a tag `vX.Y.Z` (matching `Cargo.toml`) runs
+  `.github/workflows/release.yml` on GitHub Actions: tests, installs the `vpk` version that
+  matches the `velopack` crate in `Cargo.lock`, downloads the previous release (so updates
+  are deltas), runs `installer/package.ps1` and publishes the GitHub release.
 - Releases and updates come from https://github.com/mirko0/ClipFrame-Windows
   (`updates.repo` default, `cf_core::config::RELEASES_REPO`).
 - Not yet: code signing (SmartScreen warns about unsigned installers), a published

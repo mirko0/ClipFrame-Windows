@@ -232,7 +232,7 @@ impl Editor {
 
     fn on_pointer_move(&mut self, p: (f32, f32)) {
         self.input.pointer = p;
-        let in_toolbar = p.1 < toolbar::HEIGHT * self.scale();
+        let in_toolbar = p.1 < self.toolbar_height();
         self.input.hover = if in_toolbar && !self.input.drawing {
             toolbar::hit(&self.buttons(), p)
         } else {
@@ -261,7 +261,7 @@ impl Editor {
                     let command = self.buttons()[index].command;
                     return self.run(gpu, command);
                 }
-                if p.1 >= toolbar::HEIGHT * self.scale() {
+                if p.1 >= self.toolbar_height() {
                     self.input.drawing = true;
                     let zoom = self.view().zoom;
                     self.state.pointer_down(self.to_image(p), 1.0 / zoom);
@@ -369,7 +369,7 @@ impl Editor {
         let s = self.scale();
         let (win_w, win_h) = self.surface.size();
         let margin = window::MARGIN * s;
-        let top = toolbar::HEIGHT * s + margin;
+        let top = self.toolbar_height() + margin;
         let shown = self.shown();
         #[allow(clippy::cast_precision_loss)] // window sizes
         let (area_w, area_h) = (win_w as f32 - 2.0 * margin, win_h as f32 - top - margin);
@@ -415,7 +415,7 @@ impl Editor {
     }
 
     fn buttons(&self) -> Vec<Button> {
-        toolbar::layout(self.scale())
+        toolbar::layout(self.scale(), self.window_size().0)
     }
 
     /// Shows a short message in the toolbar.
@@ -428,6 +428,10 @@ impl Editor {
     fn window_size(&self) -> (f32, f32) {
         let (w, h) = self.surface.size();
         (w as f32, h as f32)
+    }
+
+    fn toolbar_height(&self) -> f32 {
+        toolbar::height(&self.buttons(), self.scale())
     }
 
     fn scale(&self) -> f32 {

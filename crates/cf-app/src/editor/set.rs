@@ -9,15 +9,25 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::WindowId;
 
 use super::{Captured, Editor, EditorOptions, EditorOutcome};
+use crate::capture::Waker;
 
-#[derive(Default)]
 pub struct Editors {
     open: Vec<Editor>,
+    /// Wakes the event loop when an editor's background work finishes.
+    waker: Waker,
     /// Exports of editors that have closed, not yet collected.
     leftover: Vec<JoinHandle<()>>,
 }
 
 impl Editors {
+    pub fn new(waker: Waker) -> Self {
+        Self {
+            open: Vec::new(),
+            waker,
+            leftover: Vec::new(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.open.is_empty()
     }
@@ -29,7 +39,7 @@ impl Editors {
         capture: &Captured,
         options: EditorOptions,
     ) {
-        match Editor::open(event_loop, gpu, capture, options) {
+        match Editor::open(event_loop, gpu, capture, options, self.waker.clone()) {
             Ok(editor) => self.open.push(editor),
             Err(err) => tracing::error!("could not open the editor: {err:#}"),
         }
@@ -52,6 +62,13 @@ impl Editors {
     /// The earliest timer any editor needs.
     pub fn deadline(&self) -> Option<Instant> {
         self.open.iter().filter_map(Editor::deadline).min()
+    }
+
+    /// Some editor's background work finished.
+    pub fn on_wake(&mut self) {
+        for editor in &mut self.open {
+            editor.on_wake();
+        }
     }
 
     pub fn on_timer(&mut self, gpu: &Gpu) {

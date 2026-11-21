@@ -47,8 +47,8 @@ impl CaptureController {
             delayed: None,
             deliveries: Vec::new(),
             state_file,
+            editors: Editors::new(Waker::clone(&waker)),
             waker,
-            editors: Editors::default(),
         }
     }
 
@@ -137,6 +137,7 @@ impl CaptureController {
         if let Some(overlay) = &mut self.overlay {
             overlay.on_targets_ready();
         }
+        self.editors.on_wake();
     }
 
     /// Blocks until every capture handed to the delivery pipeline is saved/copied.

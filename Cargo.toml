@@ -11,6 +11,7 @@ publish = false
 [workspace.dependencies]
 # internal
 cf-core = { path = "crates/cf-core" }
+cf-detect = { path = "crates/cf-detect" }
 cf-platform = { path = "crates/cf-platform" }
 cf-render = { path = "crates/cf-render" }
 
@@ -21,6 +22,7 @@ global-hotkey = "0.10"
 png = "0.18"
 proptest = "1"
 raw-window-handle = "0.6"
+rxing = { version = "0.9", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

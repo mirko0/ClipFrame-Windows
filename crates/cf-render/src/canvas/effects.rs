@@ -20,7 +20,7 @@ use windows::core::GUID;
 use super::{Canvas, Color, LineDash, RectF, Stroke};
 use crate::GpuImage;
 
-// SAFETY (every method): as for the `Canvas` impl in the parent module â€” the context is
+// SAFETY (every method): as for the `Canvas` impl in the parent module — the context is
 // between BeginDraw and EndDraw and every argument is valid for the duration of the call.
 // Effects and geometries are created on the same device/factory as the context.
 impl Canvas<'_> {

@@ -1,0 +1,22 @@
+[package]
+name = "cf-detect"
+description = "Finding things in captures: QR/barcodes, links and sensitive text."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+cf-core.workspace = true
+rxing = { workspace = true, features = [
+    "decoders",
+    "multi_barcode_readers",
+    "full_barcode_format_support",
+    "encoding_rs",
+] }
+
+[dev-dependencies]
+rxing = { workspace = true, features = ["encoders"] }
+
+[lints]
+workspace = true

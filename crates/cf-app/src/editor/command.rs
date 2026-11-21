@@ -36,6 +36,10 @@ pub enum Command {
     Redo,
     Copy,
     Save,
+    /// Copy the text in the image (OCR).
+    CopyText,
+    /// Redact emails, IPs, long numbers and tokens found by OCR.
+    HideSensitive,
     Delete,
     Escape,
     /// Text input: finish the text (`Enter`), new line (`Shift+Enter`) or erase.
@@ -125,7 +129,10 @@ fn ctrl_command(key: &Key, shift: bool) -> Option<Command> {
     match (text.to_ascii_lowercase().as_str(), shift) {
         ("z", false) => Some(Command::Undo),
         ("z", true) | ("y", _) => Some(Command::Redo),
+        // Ctrl+Shift+C is often taken globally (by other tools), so text is Ctrl+Shift+T.
         ("c", _) => Some(Command::Copy),
+        ("t", true) => Some(Command::CopyText),
+        ("r", true) => Some(Command::HideSensitive),
         ("s", _) => Some(Command::Save),
         _ => None,
     }
@@ -195,6 +202,11 @@ mod tests {
         let z = Key::Character("z".into());
         assert_eq!(ctrl_command(&z, false), Some(Command::Undo));
         assert_eq!(ctrl_command(&z, true), Some(Command::Redo));
+        let c = Key::Character("C".into());
+        assert_eq!(ctrl_command(&c, false), Some(Command::Copy));
+        let t = Key::Character("T".into());
+        assert_eq!(ctrl_command(&t, true), Some(Command::CopyText));
+        assert_eq!(ctrl_command(&t, false), None);
     }
 
     #[test]

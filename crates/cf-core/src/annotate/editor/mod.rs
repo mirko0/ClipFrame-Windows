@@ -1,16 +1,13 @@
 //! How pointer and keyboard input change the document: the active tool, the style for new
 //! annotations, the selection, and gestures in progress.
 
+mod crop;
 mod grow;
 
 use self::grow::extend;
-use super::area::Area;
 use super::document::{Document, Edit};
 use super::hit;
 use super::shape::{Annotation, Rgba, Shape, Style, Vec2};
-
-/// Crops smaller than this (a click) are ignored.
-const MIN_CROP: f32 = 8.0;
 
 /// The active editor tool.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -150,14 +147,6 @@ impl EditorState {
             self.marker
         } else {
             self.style
-        }
-    }
-
-    /// The crop to show: the one being dragged, else the document's.
-    pub fn crop_preview(&self) -> Option<Area> {
-        match &self.gesture {
-            Some(Gesture::Cropping { from, to }) => Some(self.crop_area(*from, *to)),
-            _ => self.doc.crop(),
         }
     }
 
@@ -446,39 +435,28 @@ impl EditorState {
         });
     }
 
+    /// Adds `items` on top as one undoable step; returns how many were added.
+    pub fn add_items(&mut self, items: Vec<Annotation>) -> usize {
+        self.commit_text();
+        let start = self.doc.items().len();
+        let count = items.len();
+        let edits = items
+            .into_iter()
+            .enumerate()
+            .map(|(offset, item)| Edit::Insert {
+                index: start + offset,
+                item,
+            })
+            .collect::<Vec<_>>();
+        if !edits.is_empty() {
+            self.doc.apply(Edit::Batch(edits));
+        }
+        count
+    }
+
     fn insert(&mut self, item: Annotation) {
         let index = self.doc.items().len();
         self.doc.apply(Edit::Insert { index, item });
-    }
-
-    /// The crop dragged from `from` to `to`, inside the image and on whole pixels.
-    fn crop_area(&self, from: Vec2, to: Vec2) -> Area {
-        let area = Area::from_corners(from, to);
-        let area = if self.canvas.x > 0.0 {
-            area.clamp_to(self.canvas)
-        } else {
-            area
-        };
-        area.round()
-    }
-
-    fn finish_crop(&mut self, from: Vec2, to: Vec2) {
-        let area = self.crop_area(from, to);
-        if area.width() < MIN_CROP || area.height() < MIN_CROP {
-            return;
-        }
-        let whole = Area::from_corners(Vec2::default(), self.canvas);
-        self.set_crop((area != whole).then_some(area));
-    }
-
-    fn set_crop(&mut self, crop: Option<Area>) {
-        let before = self.doc.crop();
-        if before != crop {
-            self.doc.apply(Edit::Crop {
-                before,
-                after: crop,
-            });
-        }
     }
 }
 

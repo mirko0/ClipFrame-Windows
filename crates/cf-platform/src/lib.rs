@@ -19,6 +19,8 @@ pub mod ipc;
 #[cfg(windows)]
 pub mod monitors;
 #[cfg(windows)]
+pub mod ocr;
+#[cfg(windows)]
 pub mod screen_capture;
 #[cfg(windows)]
 pub mod single_instance;

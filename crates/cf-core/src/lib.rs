@@ -13,6 +13,7 @@ pub mod encode;
 pub mod geometry;
 pub mod hotkey;
 pub mod image;
+pub mod ocr;
 pub mod output;
 pub mod selection;
 pub mod state;

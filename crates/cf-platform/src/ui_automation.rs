@@ -171,10 +171,10 @@ fn variant_i32(value: i32) -> VARIANT {
 
 /// COM initialised on the current thread for as long as this lives (not `Send`: it must be
 /// dropped on the thread that created it).
-struct ComApartment(PhantomData<*const ()>);
+pub(crate) struct ComApartment(PhantomData<*const ()>);
 
 impl ComApartment {
-    fn enter() -> windows::core::Result<Self> {
+    pub(crate) fn enter() -> windows::core::Result<Self> {
         // SAFETY: initialises COM for this thread; balanced by `CoUninitialize` in `drop`.
         unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok()?;
         Ok(Self(PhantomData))

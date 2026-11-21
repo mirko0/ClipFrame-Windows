@@ -37,6 +37,8 @@ pub enum Edit {
         /// New crop.
         after: Option<Area>,
     },
+    /// Several edits applied in order and undone together.
+    Batch(Vec<Edit>),
 }
 
 impl Edit {
@@ -59,6 +61,7 @@ impl Edit {
                 before: after,
                 after: before,
             },
+            Self::Batch(edits) => Self::Batch(edits.into_iter().rev().map(Self::inverse).collect()),
         }
     }
 }
@@ -159,6 +162,12 @@ impl Document {
                 self.crop = after;
                 true
             }
+            Edit::Batch(edits) => {
+                // Each part bumps the revision itself.
+                return edits
+                    .into_iter()
+                    .fold(false, |any, e| self.perform(e) | any);
+            }
             _ => false,
         };
         if done {
@@ -228,6 +237,27 @@ mod tests {
         });
         assert_eq!(doc.step_number(1), 2);
         assert_eq!(doc.next_step_number(), 3);
+    }
+
+    #[test]
+    fn a_batch_is_one_undo_step() {
+        let mut doc = Document::new();
+        insert(&mut doc, step(1.0));
+        doc.apply(Edit::Batch(vec![
+            Edit::Insert {
+                index: 1,
+                item: step(2.0),
+            },
+            Edit::Insert {
+                index: 2,
+                item: step(3.0),
+            },
+        ]));
+        assert_eq!(doc.items().len(), 3);
+        assert!(doc.undo());
+        assert_eq!(doc.items(), &[step(1.0)]);
+        assert!(doc.redo());
+        assert_eq!(doc.items(), &[step(1.0), step(2.0), step(3.0)]);
     }
 
     #[test]

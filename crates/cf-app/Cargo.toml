@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 cf-core.workspace = true
+cf-detect.workspace = true
 cf-platform.workspace = true
 cf-render.workspace = true
 global-hotkey.workspace = true

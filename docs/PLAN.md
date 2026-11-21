@@ -230,6 +230,29 @@ All edits go through command objects → unlimited undo/redo.
 - **Auto-redact suggestions.** OCR + regex detect emails, IP addresses, phone numbers and
   token-looking strings; one click adds redact boxes.
 
+### Implementation (M5)
+
+- `cf-detect` (new crate, CPU-only): `codes::scan` (rxing, multi-code, no `image` crate —
+  luma is computed from the BGRA capture), `link::web_url` (only plain `http(s)` links
+  without whitespace/control characters may be opened), `sensitive::find` (hand-written
+  detectors, no regex engine: emails, IPv4/IPv6, 10–19-digit numbers spanning words — 8+
+  when they start with `+` — and long letter+digit tokens; tolerant of OCR junk before an
+  email).
+- `cf_platform::ocr::recognize`: `Windows.Media.Ocr` with the user's profile languages,
+  blocking `join()` on a worker thread (COM MTA). Images over the engine's size limit are
+  box-shrunk for recognition and positions scaled back. Measured: 6 lines in ~35–100 ms.
+- Editor: codes are scanned on a worker thread as soon as it opens; text is read the first
+  time it's needed and cached. Workers report through a channel and wake the event loop
+  (`HelperEvent::Wake` → `Editors::on_wake`). Found codes appear as chips (bottom-left)
+  showing the content, with *Copy* and — for web links only — *Open*.
+- *Text* (Ctrl+Shift+T) copies the text inside the crop. *Hide* (Ctrl+Shift+R) adds solid
+  redactions for everything sensitive as **one** undoable step (`Edit::Batch`).
+- Ctrl+Shift+C was the first choice for copying text, but other tools commonly register it
+  globally (it was taken on the dev machine), so text uses Ctrl+Shift+T.
+- Not yet: OCR of a selected region only, QR/barcode chips in the overlay before the
+  editor opens, per-kind toggles for auto-redact, non-Latin scripts beyond what the
+  installed Windows OCR languages read.
+
 ---
 
 ## 6. Workflow
@@ -274,7 +297,7 @@ All edits go through command objects → unlimited undo/redo.
 | M2 ✅ | Window & element modes | EnumWindows snapshot, UIA element hit-testing, browser content area |
 | M3 ✅ | Editor core | Document model, undo/redo, pen/line/arrow/shapes/text, Direct2D rendering, export |
 | M4 ✅ | Effects | Pixelate/redact, blur, highlighter, global spotlight layer, magnify inset, crop |
-| M5 | Smart | OCR copy, QR/barcode chips, auto-redact suggestions |
+| M5 ✅ | Smart | OCR copy, QR/barcode chips, auto-redact suggestions |
 | M6 | Workflow | Toasts, pin to screen, history, drag-out, filename templates |
 | M7 | Ship | Velopack installer, onboarding, auto-update, performance pass vs budgets |
 | Later | Video | WGC frames → Media Foundation hardware H.264/HEVC, region/window recording, GIF export |

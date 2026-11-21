@@ -1,21 +1,23 @@
 //! The annotation editor: one window per edited capture, in the helper process (it draws
 //! with the helper's GPU device).
 
+mod chips;
 mod command;
+mod export;
 mod icons;
 mod render;
 mod set;
+mod smart;
 mod toolbar;
 mod window;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use cf_core::annotate::{Area, EditorState, Tool, Vec2};
 use cf_core::geometry::Rect;
 use cf_core::image::Image;
-use cf_core::output;
 use cf_render::{Canvas, Color, Gpu, GpuImage, RectF, WindowSurface};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -24,8 +26,9 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use self::command::Command;
 pub use self::set::Editors;
+use self::smart::{Smart, Want};
 use self::toolbar::Button;
-use crate::capture::pipeline;
+use crate::capture::Waker;
 
 /// Wait after the last edit before re-copying to the clipboard.
 const CLIPBOARD_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -71,8 +74,9 @@ pub struct Editor {
     copy_due: Option<Instant>,
     exported_revision: u64,
     saved_path: Option<PathBuf>,
-    status: Option<(&'static str, Instant)>,
+    status: Option<(String, Instant)>,
     jobs: Vec<JoinHandle<()>>,
+    smart: Smart,
 }
 
 #[derive(Default)]
@@ -98,6 +102,7 @@ impl Editor {
         gpu: &Gpu,
         capture: &Captured,
         options: EditorOptions,
+        waker: Waker,
     ) -> anyhow::Result<Self> {
         let image = &capture.image;
         let window = window::create(event_loop, (image.width(), image.height()), capture.region)?;
@@ -120,6 +125,7 @@ impl Editor {
             saved_path: None,
             status: None,
             jobs: Vec::new(),
+            smart: Smart::start(image.clone(), waker),
         };
         editor.window.set_visible(true);
         editor.window.focus_window();
@@ -132,7 +138,7 @@ impl Editor {
 
     /// The next moment [`Self::on_timer`] has work.
     pub fn deadline(&self) -> Option<Instant> {
-        let status_end = self.status.map(|(_, at)| at + STATUS_TIME);
+        let status_end = self.status.as_ref().map(|(_, at)| *at + STATUS_TIME);
         [self.copy_due, status_end].into_iter().flatten().min()
     }
 
@@ -143,7 +149,11 @@ impl Editor {
             self.copy_due = None;
             self.export(gpu, true, None);
         }
-        if self.status.is_some_and(|(_, at)| now >= at + STATUS_TIME) {
+        if self
+            .status
+            .as_ref()
+            .is_some_and(|(_, at)| now >= *at + STATUS_TIME)
+        {
             self.status = None;
             self.window.request_redraw();
         }
@@ -227,6 +237,12 @@ impl Editor {
         let p = self.input.pointer;
         match state {
             ElementState::Pressed => {
+                let (_, height) = self.window_size();
+                let chips = chips::buttons(self.smart.codes(), height, self.scale());
+                if let Some(action) = chips::hit(&chips, p) {
+                    self.on_chip(action);
+                    return EditorOutcome::Continue;
+                }
                 if let Some(index) = toolbar::hit(&self.buttons(), p) {
                     let command = self.buttons()[index].command;
                     return self.run(gpu, command);
@@ -275,49 +291,15 @@ impl Editor {
             Command::Backspace => self.state.backspace(),
             Command::Copy => {
                 self.export(gpu, true, None);
-                self.status = Some(("Copied to the clipboard", Instant::now()));
+                self.say("Copied to the clipboard");
             }
             Command::Save => self.save(gpu),
+            Command::CopyText => self.want_text(Want::CopyText),
+            Command::HideSensitive => self.want_text(Want::Redact),
             Command::Escape if !self.state.escape() => return EditorOutcome::Close,
             _ => {}
         }
         EditorOutcome::Continue
-    }
-
-    fn save(&mut self, gpu: &Gpu) {
-        let path = self.saved_path.clone().unwrap_or_else(|| {
-            let name = output::capture_file_name(cf_platform::time::local_now(), "png");
-            output::unique_path(&self.options.save_dir, &name, Path::exists)
-        });
-        self.export(gpu, false, Some(path.clone()));
-        self.saved_path = Some(path);
-        self.status = Some(("Saved", Instant::now()));
-    }
-
-    /// Renders the edited image and hands it to a background thread.
-    fn export(&mut self, gpu: &Gpu, copy: bool, save_to: Option<PathBuf>) {
-        self.state.commit_text();
-        let doc = self.state.document();
-        let area = doc.crop().unwrap_or_else(|| self.whole());
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // whole pixels
-        let size = (area.width() as u32, area.height() as u32);
-        let backdrop = self.backdrop();
-        let flattened = cf_render::render_to_image(gpu, size, |canvas| {
-            canvas.set_transform(1.0, (-area.min.x, -area.min.y));
-            canvas.draw_image(&self.base, rect_of(self.whole()), None, false);
-            render::document(canvas, &backdrop, doc, None);
-        });
-        match flattened {
-            Ok(image) => {
-                if copy {
-                    self.exported_revision = doc.revision();
-                }
-                let fallback = self.options.fallback_dir.clone();
-                self.jobs
-                    .extend(pipeline::export(image, copy, save_to, fallback));
-            }
-            Err(err) => tracing::error!("could not render the edited image: {err:#}"),
-        }
     }
 
     fn render(&self, gpu: &Gpu) {
@@ -357,9 +339,10 @@ impl Editor {
             state: &self.state,
             hover: self.input.hover,
             scale: self.scale(),
-            status: self.status.map(|(text, _)| text),
+            status: self.status.as_ref().map(|(text, _)| text.as_str()),
         };
         toolbar::paint(canvas, &self.buttons(), &look);
+        chips::paint(canvas, self.smart.codes(), self.scale());
     }
 
     /// Fits the shown part of the image (the crop, or all of it while cropping) into the
@@ -415,6 +398,18 @@ impl Editor {
 
     fn buttons(&self) -> Vec<Button> {
         toolbar::layout(self.scale())
+    }
+
+    /// Shows a short message in the toolbar.
+    fn say(&mut self, text: impl Into<String>) {
+        self.status = Some((text.into(), Instant::now()));
+        self.window.request_redraw();
+    }
+
+    #[allow(clippy::cast_precision_loss)] // window sizes
+    fn window_size(&self) -> (f32, f32) {
+        let (w, h) = self.surface.size();
+        (w as f32, h as f32)
     }
 
     fn scale(&self) -> f32 {

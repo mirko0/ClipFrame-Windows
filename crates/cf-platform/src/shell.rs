@@ -14,6 +14,15 @@ pub fn open_folder(dir: &Path) -> io::Result<()> {
     Command::new("explorer.exe").arg(dir).spawn().map(drop)
 }
 
+/// Opens a web link in the default browser. Callers must pass only links they have
+/// validated as plain `http(s)` URLs (see `cf_detect::link::web_url`).
+///
+/// # Errors
+/// When the shell cannot be started.
+pub fn open_url(url: &str) -> io::Result<()> {
+    Command::new("explorer.exe").arg(url).spawn().map(drop)
+}
+
 /// Opens `file` in Notepad.
 ///
 /// Used for the settings file until the settings window exists; Notepad is always present,

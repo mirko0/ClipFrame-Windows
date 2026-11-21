@@ -214,7 +214,7 @@ pub enum Shape {
         /// The opposite corner.
         b: Vec2,
     },
-    /// The source rectangle `a`â€“`b` shown [`MAGNIFY_ZOOM`] times larger, with the inset's
+    /// The source rectangle `a`–`b` shown [`MAGNIFY_ZOOM`] times larger, with the inset's
     /// top-left at `at`.
     Magnify {
         /// One source corner.
@@ -324,7 +324,7 @@ impl Annotation {
     }
 }
 
-/// Size of the inset that magnifies the source rectangle `a`â€“`b`.
+/// Size of the inset that magnifies the source rectangle `a`–`b`.
 pub fn inset_size(a: Vec2, b: Vec2) -> Vec2 {
     let area = Area::from_corners(a, b);
     Vec2::new(area.width() * MAGNIFY_ZOOM, area.height() * MAGNIFY_ZOOM)

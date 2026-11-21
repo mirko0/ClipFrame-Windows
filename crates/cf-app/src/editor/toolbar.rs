@@ -59,6 +59,17 @@ pub fn layout(scale: f32) -> Vec<Button> {
     row.push(BUTTON, Command::Undo, "Undo (Ctrl+Z)");
     row.push(BUTTON, Command::Redo, "Redo (Ctrl+Y)");
     row.gap();
+    row.push(
+        WIDE,
+        Command::CopyText,
+        "Copy the text in the image (Ctrl+Shift+T)",
+    );
+    row.push(
+        WIDE,
+        Command::HideSensitive,
+        "Hide emails, IPs, numbers, keys (Ctrl+Shift+R)",
+    );
+    row.gap();
     row.push(WIDE, Command::Copy, "Copy image (Ctrl+C)");
     row.push(WIDE, Command::Save, "Save as new file (Ctrl+S)");
     row.buttons
@@ -198,6 +209,8 @@ fn icon(canvas: &Canvas<'_>, button: &Button, style: Style, s: f32) {
         Command::Redo => glyph(canvas, "↷", (cx, cy), s),
         Command::Copy => label(canvas, "Copy", (cx, cy)),
         Command::Save => label(canvas, "Save", (cx, cy)),
+        Command::CopyText => label(canvas, "Text", (cx, cy)),
+        Command::HideSensitive => label(canvas, "Hide", (cx, cy)),
         _ => {}
     }
 }

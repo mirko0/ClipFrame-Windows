@@ -10,6 +10,7 @@ use winit::window::WindowId;
 
 use super::{Captured, Editor, EditorOptions, EditorOutcome};
 use crate::capture::Waker;
+use crate::pin::Pinned;
 
 pub struct Editors {
     open: Vec<Editor>,
@@ -17,6 +18,8 @@ pub struct Editors {
     waker: Waker,
     /// Exports of editors that have closed, not yet collected.
     leftover: Vec<JoinHandle<()>>,
+    /// Pins requested by editors that have closed.
+    pins: Vec<Pinned>,
 }
 
 impl Editors {
@@ -25,6 +28,7 @@ impl Editors {
             open: Vec::new(),
             waker,
             leftover: Vec::new(),
+            pins: Vec::new(),
         }
     }
 
@@ -54,6 +58,7 @@ impl Editors {
             let mut editor = self.open.remove(index);
             editor.close(gpu);
             self.leftover.extend(editor.take_jobs());
+            self.pins.extend(editor.take_pin());
             tracing::info!("editor closed");
         }
         true
@@ -75,6 +80,11 @@ impl Editors {
         for editor in &mut self.open {
             editor.on_timer(gpu);
         }
+    }
+
+    /// Pins requested by closed editors since the last call.
+    pub fn take_pins(&mut self) -> Vec<Pinned> {
+        std::mem::take(&mut self.pins)
     }
 
     /// Background exports started by any editor (including closed ones).

@@ -1,4 +1,4 @@
-//! After a region is chosen: encode once, then save to disk and/or copy to the clipboard.
+//! After a region is chosen: encode once, then copy, save, keep in history and notify.
 //! Runs on a worker thread so the UI never waits for compression or disk I/O.
 
 use std::path::{Path, PathBuf};
@@ -6,9 +6,12 @@ use std::thread;
 use std::time::Instant;
 
 use anyhow::Context as _;
+use cf_core::encode;
 use cf_core::image::Image;
-use cf_core::{encode, output};
+use cf_core::naming::{Naming, Source};
+use cf_platform::toast::{self, Toast};
 
+use super::history::HistoryStore;
 use crate::editor::EditorOptions;
 
 /// Where a finished capture goes.
@@ -18,18 +21,34 @@ pub struct Delivery {
     pub save_dir: Option<PathBuf>,
     /// Used when saving to `save_dir` fails.
     pub fallback_dir: PathBuf,
+    /// How saved files are named.
+    pub naming: Naming,
     pub copy_to_clipboard: bool,
-    /// Open the editor after an interactive capture, with these options.
-    pub editor: Option<EditorOptions>,
+    /// Recent captures, when history is on.
+    pub history: Option<HistoryStore>,
+    /// Show a toast (only used when the editor doesn't open).
+    pub toast: bool,
+    /// Editor settings (for captures and reopened recent captures).
+    pub editor: EditorOptions,
+    /// Open the editor after an interactive capture.
+    pub open_editor: bool,
 }
 
-/// Delivers `image` in the background. The handle lets the helper wait for unfinished
+/// One capture to deliver.
+pub struct Job {
+    pub image: Image,
+    pub source: Source,
+    /// Whether to show a toast for this capture.
+    pub notify: bool,
+}
+
+/// Delivers a capture in the background. The handle lets the helper wait for unfinished
 /// deliveries before it exits.
-pub fn deliver(image: Image, delivery: Delivery) -> Option<thread::JoinHandle<()>> {
+pub fn deliver(job: Job, delivery: Delivery) -> Option<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("capture-delivery".into())
         .spawn(move || {
-            if let Err(err) = run(&image, &delivery) {
+            if let Err(err) = run(&job, &delivery) {
                 tracing::error!("delivering capture failed: {err:#}");
             }
         })
@@ -37,25 +56,28 @@ pub fn deliver(image: Image, delivery: Delivery) -> Option<thread::JoinHandle<()
         .ok()
 }
 
-fn run(image: &Image, delivery: &Delivery) -> anyhow::Result<()> {
-    if delivery.save_dir.is_none() && !delivery.copy_to_clipboard {
-        return Ok(());
-    }
+fn run(job: &Job, delivery: &Delivery) -> anyhow::Result<()> {
     let started = Instant::now();
-    let png = encode::png(image)?;
+    let png = encode::png(&job.image)?;
     let encoded_ms = started.elapsed().as_millis();
 
     if delivery.copy_to_clipboard {
-        cf_platform::clipboard::set_image(image, &png).context("copying to the clipboard")?;
+        cf_platform::clipboard::set_image(&job.image, &png).context("copying to the clipboard")?;
     }
     let saved = delivery
         .save_dir
         .as_deref()
-        .map(|dir| save_with_fallback(dir, &delivery.fallback_dir, &png))
+        .map(|dir| save_with_fallback(dir, delivery, &job.source, &png))
         .transpose()?;
+    let kept = delivery.history.as_ref().and_then(|store| {
+        store
+            .add(&png)
+            .inspect_err(|err| tracing::warn!("could not keep the capture in history: {err}"))
+            .ok()
+    });
     tracing::info!(
-        width = image.width(),
-        height = image.height(),
+        width = job.image.width(),
+        height = job.image.height(),
         bytes = png.len(),
         encoded_ms,
         total_ms = started.elapsed().as_millis(),
@@ -63,24 +85,75 @@ fn run(image: &Image, delivery: &Delivery) -> anyhow::Result<()> {
         copied = delivery.copy_to_clipboard,
         "capture delivered"
     );
+    if job.notify {
+        notify(
+            &job.image,
+            saved.as_deref(),
+            kept.as_deref(),
+            delivery.copy_to_clipboard,
+        );
+    }
     Ok(())
 }
 
-fn save_with_fallback(dir: &Path, fallback: &Path, png: &[u8]) -> anyhow::Result<PathBuf> {
-    save(dir, png).or_else(|err| {
+/// "Capture saved" with Open / Show in folder, or "Copied to the clipboard".
+fn notify(image: &Image, saved: Option<&Path>, kept: Option<&Path>, copied: bool) {
+    let size = format!("{} × {}", image.width(), image.height());
+    let name = saved
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned());
+    let toast = match (saved, &name) {
+        (Some(path), Some(name)) => Toast {
+            title: if copied {
+                "Capture saved and copied"
+            } else {
+                "Capture saved"
+            },
+            body: name,
+            image: Some(path),
+            open: Some(path),
+            folder: path.parent(),
+        },
+        _ if copied => Toast {
+            title: "Copied to the clipboard",
+            body: &size,
+            image: kept,
+            open: kept,
+            folder: None,
+        },
+        _ => return,
+    };
+    if let Err(err) = toast::show(&toast) {
+        tracing::warn!("could not show the notification: {err}");
+    }
+}
+
+fn save_with_fallback(
+    dir: &Path,
+    delivery: &Delivery,
+    source: &Source,
+    png: &[u8],
+) -> anyhow::Result<PathBuf> {
+    save(dir, &delivery.naming, source, png).or_else(|err| {
+        let fallback = &delivery.fallback_dir;
         tracing::warn!(
-            "could not save to {}: {err:#}. If Windows Security's Controlled folder access is              on, allow ClipFrame under Ransomware protection → Allow an app. Saving to {} instead.",
+            "could not save to {}: {err:#}. If Windows Security's Controlled folder access is \
+             on, allow ClipFrame under Ransomware protection → Allow an app. Saving to {} instead.",
             dir.display(),
             fallback.display()
         );
-        save(fallback, png)
+        save(fallback, &delivery.naming, source, png)
     })
 }
 
-fn save(dir: &Path, png: &[u8]) -> anyhow::Result<PathBuf> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let name = output::capture_file_name(cf_platform::time::local_now(), "png");
-    let path = output::unique_path(dir, &name, Path::exists);
+/// Writes `png` to a new, templated file in `dir`.
+pub fn save(dir: &Path, naming: &Naming, source: &Source, png: &[u8]) -> anyhow::Result<PathBuf> {
+    let now = cf_platform::time::local_now();
+    let path = naming.path(dir, now, source, Path::exists);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
     std::fs::write(&path, png).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }
@@ -123,7 +196,7 @@ fn run_export(
             Ok(()) => tracing::info!(path = %path.display(), "edited image saved"),
             Err(err) => {
                 tracing::warn!("could not write {}: {err}", path.display());
-                let saved = save(fallback_dir, &png)?;
+                let saved = save(fallback_dir, &Naming::default(), &Source::default(), &png)?;
                 tracing::info!(path = %saved.display(), "edited image saved to the fallback folder");
             }
         }

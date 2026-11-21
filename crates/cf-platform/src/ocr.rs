@@ -9,7 +9,7 @@ use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
 use windows::Media::Ocr::{OcrEngine, OcrLine};
 use windows::Storage::Streams::DataWriter;
 
-use crate::ui_automation::ComApartment;
+use crate::com;
 
 /// Why text could not be read.
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +28,7 @@ pub enum OcrError {
 /// # Errors
 /// [`OcrError`] when no OCR language is installed or a Windows call fails.
 pub fn recognize(image: &Image) -> Result<Recognized, OcrError> {
-    let _com = ComApartment::enter()?;
+    com::keep_mta()?;
     let engine =
         OcrEngine::TryCreateFromUserProfileLanguages().map_err(|_| OcrError::NoLanguage)?;
     let limit = OcrEngine::MaxImageDimension()?.max(1);

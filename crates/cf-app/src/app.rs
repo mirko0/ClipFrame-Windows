@@ -56,6 +56,17 @@ fn forward_native_events(proxy: &EventLoopProxy<AppEvent>) {
     }));
     let tray_proxy = proxy.clone();
     TrayIconEvent::set_event_handler(Some(move |event| {
+        // Sent synchronously just before the context menu opens: list recent captures now.
+        if matches!(
+            event,
+            TrayIconEvent::Click {
+                button: MouseButton::Right,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+        ) {
+            crate::tray::refresh_recent();
+        }
         if matches!(event, TrayIconEvent::Click { .. }) {
             let _ = tray_proxy.send_event(AppEvent::TrayClick(event));
         }
@@ -86,7 +97,7 @@ impl App {
     }
 
     fn start(&mut self, event_loop: &ActiveEventLoop) {
-        match create_services() {
+        match create_services(&self.paths) {
             Ok(services) => {
                 self.services = Some(services);
                 self.apply_hotkeys();
@@ -137,6 +148,9 @@ impl App {
         match action {
             Action::Capture => helper_client::request(CaptureRequest::Interactive),
             Action::RepeatLast => helper_client::request(CaptureRequest::RepeatLast),
+            Action::OpenRecent(index) => {
+                helper_client::request(CaptureRequest::OpenRecent(index));
+            }
             Action::OpenCapturesFolder => {
                 let dir = self
                     .config
@@ -175,9 +189,9 @@ impl ApplicationHandler<AppEvent> for App {
     }
 }
 
-fn create_services() -> anyhow::Result<Services> {
+fn create_services(paths: &AppPaths) -> anyhow::Result<Services> {
     Ok(Services {
-        tray: Tray::new().context("creating the tray icon")?,
+        tray: Tray::new(paths.history_dir.clone()).context("creating the tray icon")?,
         hotkeys: HotkeyService::new().context("creating the hotkey manager")?,
     })
 }

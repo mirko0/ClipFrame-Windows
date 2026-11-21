@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 use cf_core::annotate::{Area, EditorState, Tool, Vec2};
 use cf_core::geometry::Rect;
 use cf_core::image::Image;
+use cf_core::naming::{Naming, Source};
 use cf_render::{Canvas, Color, Gpu, GpuImage, RectF, WindowSurface};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
@@ -29,6 +30,7 @@ pub use self::set::Editors;
 use self::smart::{Smart, Want};
 use self::toolbar::Button;
 use crate::capture::Waker;
+use crate::pin::Pinned;
 
 /// Wait after the last edit before re-copying to the clipboard.
 const CLIPBOARD_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -42,6 +44,8 @@ pub struct Captured {
     pub image: Image,
     /// Where it was on the desktop (the editor opens on that monitor).
     pub region: Rect,
+    /// The window it came from (for file names).
+    pub source: Source,
 }
 
 /// Where edited images go.
@@ -55,6 +59,8 @@ pub struct EditorOptions {
     pub fallback_dir: PathBuf,
     /// Opacity of the spotlight dim layer.
     pub spotlight_dim: f32,
+    /// How saved files are named.
+    pub naming: Naming,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +83,11 @@ pub struct Editor {
     status: Option<(String, Instant)>,
     jobs: Vec<JoinHandle<()>>,
     smart: Smart,
+    source: Source,
+    /// Where the capture was on the desktop (pins open there).
+    region: Rect,
+    /// Set by "Pin"; collected once the editor has closed.
+    pinned: Option<Pinned>,
 }
 
 #[derive(Default)]
@@ -126,6 +137,9 @@ impl Editor {
             status: None,
             jobs: Vec::new(),
             smart: Smart::start(image.clone(), waker),
+            source: capture.source.clone(),
+            region: capture.region,
+            pinned: None,
         };
         editor.window.set_visible(true);
         editor.window.focus_window();
@@ -294,6 +308,8 @@ impl Editor {
                 self.say("Copied to the clipboard");
             }
             Command::Save => self.save(gpu),
+            Command::Drag => self.drag_out(gpu),
+            Command::Pin if self.pin(gpu) => return EditorOutcome::Close,
             Command::CopyText => self.want_text(Want::CopyText),
             Command::HideSensitive => self.want_text(Want::Redact),
             Command::Escape if !self.state.escape() => return EditorOutcome::Close,

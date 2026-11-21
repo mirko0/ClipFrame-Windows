@@ -4,6 +4,7 @@
 //! the helper exits after its idle period, the driver memory goes with it (see PLAN §2).
 
 mod frozen;
+pub mod history;
 mod overlay;
 pub mod pipeline;
 
@@ -15,8 +16,10 @@ use anyhow::Context as _;
 use cf_core::capture_mode::CaptureMode;
 use cf_core::capture_request::CaptureRequest;
 use cf_core::config::Config;
+use cf_core::geometry::Point;
 use cf_core::geometry::Rect;
 use cf_core::image::{self, Frame, Image};
+use cf_core::naming::Source;
 use cf_core::state::AppState;
 use cf_render::Gpu;
 use winit::event::WindowEvent;
@@ -27,6 +30,7 @@ pub use self::overlay::Waker;
 use self::overlay::{Outcome, Overlay, OverlayOptions};
 pub use self::pipeline::Delivery;
 use crate::editor::{Captured, Editors};
+use crate::pin::Pins;
 
 /// Owns the overlay, the GPU device and capture state.
 pub struct CaptureController {
@@ -37,6 +41,9 @@ pub struct CaptureController {
     state_file: PathBuf,
     waker: Waker,
     editors: Editors,
+    /// The window the user was in when the current capture was requested.
+    source: Source,
+    pins: Pins,
 }
 
 impl CaptureController {
@@ -49,12 +56,17 @@ impl CaptureController {
             state_file,
             editors: Editors::new(Waker::clone(&waker)),
             waker,
+            source: Source::default(),
+            pins: Pins::default(),
         }
     }
 
     /// Whether an overlay or editor is open or a delayed capture is pending.
     pub fn is_busy(&self) -> bool {
-        self.overlay.is_some() || self.delayed.is_some() || !self.editors.is_empty()
+        self.overlay.is_some()
+            || self.delayed.is_some()
+            || !self.editors.is_empty()
+            || !self.pins.is_empty()
     }
 
     /// Starts a capture now, or schedules it when a delay is configured.
@@ -112,7 +124,12 @@ impl CaptureController {
         let outcome = match self.overlay.as_mut() {
             Some(overlay) if overlay.owns(id) => overlay.handle_event(gpu, id, event),
             _ => {
-                self.editors.handle(gpu, id, event);
+                if !self.pins.handle(gpu, id, &event) {
+                    self.editors.handle(gpu, id, event);
+                }
+                for pinned in self.editors.take_pins() {
+                    self.pins.open(event_loop, gpu, pinned);
+                }
                 self.collect_editor_jobs();
                 return;
             }
@@ -125,7 +142,8 @@ impl CaptureController {
     }
 
     fn collect_editor_jobs(&mut self) {
-        let jobs = self.editors.take_jobs();
+        let mut jobs = self.editors.take_jobs();
+        jobs.extend(self.pins.take_jobs());
         if !jobs.is_empty() {
             self.deliveries.retain(|handle| !handle.is_finished());
             self.deliveries.extend(jobs);
@@ -156,9 +174,13 @@ impl CaptureController {
         config: &Config,
         delivery: &Delivery,
     ) {
+        self.source = cf_platform::foreground::source();
         let result = match request {
             CaptureRequest::Interactive => self.start_interactive(event_loop, config, delivery),
             CaptureRequest::RepeatLast => self.repeat_last(config, delivery),
+            CaptureRequest::OpenRecent(index) => {
+                self.open_recent(event_loop, usize::from(index), delivery)
+            }
         };
         if let Err(err) = result {
             tracing::error!("capture failed: {err:#}");
@@ -176,7 +198,7 @@ impl CaptureController {
         let include_cursor = config.capture.include_cursor;
         if config.capture.default_mode == CaptureMode::AllMonitors {
             let desktop = frozen::freeze(include_cursor)?;
-            self.deliver_region(&desktop.frames, desktop.bounds, delivery);
+            self.deliver_region(&desktop.frames, desktop.bounds, delivery, false);
             return Ok(());
         }
         // Capture the screen on a worker while the GPU device is created here.
@@ -204,7 +226,31 @@ impl CaptureController {
             return Ok(());
         };
         let desktop = frozen::freeze(config.capture.include_cursor)?;
-        self.deliver_region(&desktop.frames, region, delivery);
+        self.deliver_region(&desktop.frames, region, delivery, false);
+        Ok(())
+    }
+
+    /// Opens a recent capture from history in the editor, on the monitor under the pointer.
+    fn open_recent(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        index: usize,
+        delivery: &Delivery,
+    ) -> anyhow::Result<()> {
+        let store = delivery.history.as_ref().context("history is turned off")?;
+        let image = store.load(index)?;
+        if self.gpu.is_none() {
+            self.gpu = Some(Gpu::new().context("initialising the GPU")?);
+        }
+        let gpu = self.gpu.as_ref().context("GPU unavailable")?;
+        let pointer = cf_platform::cursor::position().unwrap_or(Point { x: 0, y: 0 });
+        let capture = Captured {
+            image,
+            region: Rect::new(pointer.x, pointer.y, 1, 1),
+            source: Source::default(),
+        };
+        self.editors
+            .open(event_loop, gpu, &capture, delivery.editor.clone());
         Ok(())
     }
 
@@ -220,32 +266,45 @@ impl CaptureController {
         let frames = overlay.into_frames(); // drops windows and their GPU resources
         tracing::info!(captured = region.is_some(), "overlay closed");
         let Some(region) = region else { return };
-        let Some(image) = self.deliver_region(&frames, region, delivery) else {
+        let Some(image) = self.deliver_region(&frames, region, delivery, delivery.open_editor)
+        else {
             return;
         };
-        if let (Some(options), Some(gpu)) = (delivery.editor.clone(), self.gpu.as_ref()) {
-            let capture = Captured { image, region };
-            self.editors.open(event_loop, gpu, &capture, options);
+        if let Some(gpu) = self.gpu.as_ref() {
+            let capture = Captured {
+                image,
+                region,
+                source: self.source.clone(),
+            };
+            self.editors
+                .open(event_loop, gpu, &capture, delivery.editor.clone());
         }
     }
 
-    /// Crops, remembers and delivers `region`; returns the image when an editor is wanted.
+    /// Crops, remembers and delivers `region`; returns the image when `for_editor`.
+    /// A toast is shown only when no editor opens.
     fn deliver_region(
         &mut self,
         frames: &[Frame],
         region: Rect,
         delivery: &Delivery,
+        for_editor: bool,
     ) -> Option<Image> {
         self.remember(region);
         let Some(image) = image::crop(frames, region) else {
             tracing::warn!(?region, "empty capture region");
             return None;
         };
-        let for_editor = delivery.editor.is_some().then(|| image.clone());
+        let kept = for_editor.then(|| image.clone());
+        let job = pipeline::Job {
+            image,
+            source: self.source.clone(),
+            notify: delivery.toast && !for_editor,
+        };
         self.deliveries.retain(|handle| !handle.is_finished());
         self.deliveries
-            .extend(pipeline::deliver(image, delivery.clone()));
-        for_editor
+            .extend(pipeline::deliver(job, delivery.clone()));
+        kept
     }
 
     fn remember(&self, region: Rect) {

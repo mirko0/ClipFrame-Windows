@@ -1,16 +1,24 @@
 //! The notification-area icon and its context menu.
 
+use std::cell::RefCell;
+use std::path::PathBuf;
+
 use anyhow::Context as _;
+use cf_core::capture_request::MAX_RECENT;
+use cf_core::history;
 use cf_core::hotkey::Hotkey;
-use tray_icon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use crate::actions::Action;
+use crate::capture::history as store;
 use crate::tray_icon_image;
 
-/// Menu layout; `None` is a separator.
+/// Recent captures listed in the menu.
+const RECENT_SHOWN: usize = 10;
+
+/// Menu layout after the "Recent captures" submenu; `None` is a separator.
 const MENU_LAYOUT: &[Option<(&str, Action)>] = &[
-    Some(("Capture", Action::Capture)),
     None,
     Some(("Open captures folder", Action::OpenCapturesFolder)),
     Some(("Edit settings file", Action::OpenConfig)),
@@ -20,15 +28,26 @@ const MENU_LAYOUT: &[Option<(&str, Action)>] = &[
     Some(("Quit ClipFrame", Action::Quit)),
 ];
 
+thread_local! {
+    /// The "Recent captures" submenu. Tray events arrive synchronously on this (the main)
+    /// thread just before the menu opens, which is when it is refreshed.
+    static RECENT: RefCell<Option<RecentMenu>> = const { RefCell::new(None) };
+}
+
 pub struct Tray {
     icon: TrayIcon,
     items: Vec<(MenuItem, Action)>,
 }
 
 impl Tray {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(history_dir: PathBuf) -> anyhow::Result<Self> {
         let menu = Menu::new();
         let mut items = Vec::new();
+        let capture = MenuItem::new("Capture", true, None);
+        menu.append(&capture)?;
+        items.push((capture, Action::Capture));
+        let recent = Submenu::new("Recent captures", true);
+        menu.append(&recent)?;
         for entry in MENU_LAYOUT {
             if let Some((label, action)) = entry {
                 let item = MenuItem::new(*label, true, None);
@@ -46,14 +65,26 @@ impl Tray {
             .with_tooltip("ClipFrame")
             .with_icon(image)
             .build()?;
+        RECENT.with(|cell| {
+            *cell.borrow_mut() = Some(RecentMenu {
+                submenu: recent,
+                dir: history_dir,
+                items: Vec::new(),
+            });
+        });
+        refresh_recent();
         Ok(Self { icon, items })
     }
 
     pub fn action_for(&self, id: &MenuId) -> Option<Action> {
-        self.items
+        let fixed = self
+            .items
             .iter()
             .find(|(item, _)| item.id() == id)
-            .map(|(_, action)| *action)
+            .map(|(_, action)| *action);
+        fixed.or_else(|| {
+            RECENT.with(|cell| cell.borrow().as_ref().and_then(|menu| menu.action_for(id)))
+        })
     }
 
     /// Shows the capture hotkey in the menu and tooltip, flagging it when registration failed.
@@ -75,5 +106,53 @@ impl Tray {
         if let Err(err) = self.icon.set_tooltip(Some(tooltip)) {
             tracing::warn!("could not update tray tooltip: {err}");
         }
+    }
+}
+
+/// Re-reads the history folder into the "Recent captures" submenu (call right before the
+/// menu opens; only lists file names and reads 24-byte PNG headers).
+pub fn refresh_recent() {
+    RECENT.with(|cell| {
+        if let Some(menu) = cell.borrow_mut().as_mut() {
+            if let Err(err) = menu.refresh() {
+                tracing::warn!("could not list recent captures: {err}");
+            }
+        }
+    });
+}
+
+struct RecentMenu {
+    submenu: Submenu,
+    dir: PathBuf,
+    /// Current entries and the request index each one opens.
+    items: Vec<(MenuItem, Option<u8>)>,
+}
+
+impl RecentMenu {
+    fn refresh(&mut self) -> anyhow::Result<()> {
+        for (item, _) in self.items.drain(..) {
+            self.submenu.remove(&item)?;
+        }
+        let now = cf_platform::time::local_now();
+        let shown = RECENT_SHOWN.min(usize::from(MAX_RECENT));
+        for (index, entry) in store::entries(&self.dir).iter().take(shown).enumerate() {
+            let label = history::label(entry, now, store::size_of(entry));
+            let item = MenuItem::new(label, true, None);
+            self.submenu.append(&item)?;
+            self.items.push((item, u8::try_from(index).ok()));
+        }
+        if self.items.is_empty() {
+            let item = MenuItem::new("No recent captures", false, None);
+            self.submenu.append(&item)?;
+            self.items.push((item, None));
+        }
+        Ok(())
+    }
+
+    fn action_for(&self, id: &MenuId) -> Option<Action> {
+        self.items
+            .iter()
+            .find(|(item, _)| item.id() == id)
+            .and_then(|(_, index)| index.map(Action::OpenRecent))
     }
 }

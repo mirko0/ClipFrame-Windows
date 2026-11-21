@@ -269,6 +269,39 @@ All edits go through command objects → unlimited undo/redo.
   setting (`HKCU\Control Panel\Keyboard\PrintScreenKeyForSnippingEnabled`) and offer to
   disable it when the user binds PrintScreen.
 
+### Implementation (M6)
+
+- **File names** (`cf_core::naming`): `output.file_name` template with `{date}` `{time}`
+  `{year}` … `{second}` `{app}` `{title}` `{n}`, `output.date_folders` (`YYYY-MM`). Names are
+  sanitised (reserved characters, device names, trailing dots, 120-char stems). `{app}` and
+  `{title}` come from the foreground window when the capture is requested
+  (`cf_platform::foreground`). Editor "Save" and drag-out use the same template.
+- **Toasts** (`cf_platform::toast`, `notifications.toast`): shown only when the editor
+  doesn't open. "Capture saved" (with *Open* / *Show in folder*) or "Copied to the
+  clipboard", with the capture as an inline image. Buttons use protocol activation with
+  `file:` URIs, so they work after the helper exits and need no COM activator. The
+  unpackaged app registers `HKCU\Software\Classes\AppUserModelId\ClipFrame.App`
+  (DisplayName + IconUri → `%LOCALAPPDATA%\ClipFrame\icon.png`).
+- **WinRT and COM**: OCR and toasts must not init/uninit COM per call — windows-rs caches
+  activation factories process-wide and crashed on reuse after the apartment was torn down.
+  `cf_platform::com::keep_mta` keeps one MTA alive (`CoIncrementMTAUsage`).
+- **History** (`history.keep`, default 20; 0 = off): every capture is also written to
+  `%LOCALAPPDATA%\ClipFrame\history` (named by time, pruned to `keep`, never held in RAM).
+  The tray's *Recent captures* submenu is rebuilt from the folder right before the menu
+  opens (tray-icon sends the click event synchronously first) and shows time and size (read
+  from the PNG header). Picking one sends `CaptureRequest::OpenRecent(n)` (codes 100+n) to
+  the helper, which decodes it into the editor on the monitor under the pointer.
+- **Pin to screen** (editor *Pin*, Ctrl+P): the edited image opens in a borderless,
+  always-on-top window exactly where it was captured; drag to move, wheel to zoom
+  (0.1–4×), Ctrl+C copies, Esc or double-click closes. Pins live in the helper and keep it
+  running.
+- **Drag out** (editor *Drag*): writes the edited PNG to `%TEMP%\ClipFrame\drag` (cleaned
+  after 10 min) and starts an OLE drag with the file's shell data object
+  (`SHBindToParent` → `IShellFolder::GetUIObjectOf`, which carries `CF_HDROP`;
+  `SHCreateDataObject` did not, so drop targets rejected it).
+- Not yet: JPEG/WebP output, pin opacity and click-through (needs a composition swap
+  chain), a history panel with thumbnails (tray menu only for now), PrintScreen takeover.
+
 ---
 
 ## 7. Installer & onboarding
@@ -298,7 +331,7 @@ All edits go through command objects → unlimited undo/redo.
 | M3 ✅ | Editor core | Document model, undo/redo, pen/line/arrow/shapes/text, Direct2D rendering, export |
 | M4 ✅ | Effects | Pixelate/redact, blur, highlighter, global spotlight layer, magnify inset, crop |
 | M5 ✅ | Smart | OCR copy, QR/barcode chips, auto-redact suggestions |
-| M6 | Workflow | Toasts, pin to screen, history, drag-out, filename templates |
+| M6 ✅ | Workflow | Toasts, pin to screen, history, drag-out, filename templates |
 | M7 | Ship | Velopack installer, onboarding, auto-update, performance pass vs budgets |
 | Later | Video | WGC frames → Media Foundation hardware H.264/HEVC, region/window recording, GIF export |
 

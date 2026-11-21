@@ -11,9 +11,15 @@ pub mod shell;
 #[cfg(windows)]
 pub mod clipboard;
 #[cfg(windows)]
+mod com;
+#[cfg(windows)]
 pub mod cursor;
 #[cfg(windows)]
+pub mod drag;
+#[cfg(windows)]
 pub mod focus;
+#[cfg(windows)]
+pub mod foreground;
 #[cfg(windows)]
 pub mod ipc;
 #[cfg(windows)]
@@ -26,6 +32,8 @@ pub mod screen_capture;
 pub mod single_instance;
 #[cfg(windows)]
 pub mod time;
+#[cfg(windows)]
+pub mod toast;
 #[cfg(windows)]
 pub mod ui_automation;
 #[cfg(windows)]

@@ -13,12 +13,15 @@ raw-window-handle.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+windows-core.workspace = true
 windows = { workspace = true, features = [
+    "Data_Xml_Dom",
     "Foundation",
     "Foundation_Collections",
     "Graphics_Imaging",
     "Media_Ocr",
     "Storage_Streams",
+    "UI_Notifications",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
@@ -28,10 +31,14 @@ windows = { workspace = true, features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_SystemServices",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_UI_Accessibility",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

@@ -70,6 +70,8 @@ pub fn layout(scale: f32) -> Vec<Button> {
         "Hide emails, IPs, numbers, keys (Ctrl+Shift+R)",
     );
     row.gap();
+    row.push(WIDE, Command::Drag, "Drag into another app");
+    row.push(WIDE, Command::Pin, "Pin on screen (Ctrl+P)");
     row.push(WIDE, Command::Copy, "Copy image (Ctrl+C)");
     row.push(WIDE, Command::Save, "Save as new file (Ctrl+S)");
     row.buttons
@@ -210,6 +212,8 @@ fn icon(canvas: &Canvas<'_>, button: &Button, style: Style, s: f32) {
         Command::Copy => label(canvas, "Copy", (cx, cy)),
         Command::Save => label(canvas, "Save", (cx, cy)),
         Command::CopyText => label(canvas, "Text", (cx, cy)),
+        Command::Pin => label(canvas, "Pin", (cx, cy)),
+        Command::Drag => label(canvas, "Drag", (cx, cy)),
         Command::HideSensitive => label(canvas, "Hide", (cx, cy)),
         _ => {}
     }
@@ -250,5 +254,7 @@ mod tests {
         assert_eq!(hit(&buttons, inside), Some(0));
         assert_eq!(hit(&buttons, (0.0, 0.0)), None);
         assert!(min_width(1.0) > 600.0);
+        // Fits a 1920-pixel-wide screen at 150 % scaling.
+        assert!(min_width(1.5) <= 1920.0, "toolbar is {} px", min_width(1.5));
     }
 }

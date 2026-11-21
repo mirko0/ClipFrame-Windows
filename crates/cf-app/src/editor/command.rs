@@ -38,6 +38,10 @@ pub enum Command {
     Save,
     /// Copy the text in the image (OCR).
     CopyText,
+    /// Pin the edited image on screen and close the editor.
+    Pin,
+    /// Drag the edited image into another app (toolbar only).
+    Drag,
     /// Redact emails, IPs, long numbers and tokens found by OCR.
     HideSensitive,
     Delete,
@@ -134,6 +138,7 @@ fn ctrl_command(key: &Key, shift: bool) -> Option<Command> {
         ("t", true) => Some(Command::CopyText),
         ("r", true) => Some(Command::HideSensitive),
         ("s", _) => Some(Command::Save),
+        ("p", false) => Some(Command::Pin),
         _ => None,
     }
 }

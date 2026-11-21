@@ -27,6 +27,8 @@ pub struct AppPaths {
     pub fallback_captures_dir: PathBuf,
     /// Small runtime state shared by the tray and the capture helper.
     pub state_file: PathBuf,
+    /// Recent captures for the tray's "Recent" menu.
+    pub history_dir: PathBuf,
     /// Whether portable mode is active.
     pub is_portable: bool,
 }
@@ -97,6 +99,7 @@ impl AppPaths {
                 default_captures_dir: base.join("captures"),
                 fallback_captures_dir: base.join("captures"),
                 state_file: base.join(STATE_FILE),
+                history_dir: base.join("history"),
                 is_portable: true,
             });
         }
@@ -112,6 +115,7 @@ impl AppPaths {
             default_captures_dir,
             fallback_captures_dir: local.join("captures"),
             state_file: local.join(STATE_FILE),
+            history_dir: local.join("history"),
             is_portable: false,
         })
     }

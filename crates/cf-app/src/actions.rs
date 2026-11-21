@@ -15,6 +15,8 @@ pub enum Action {
     ReloadConfig,
     /// Open the logs folder in Explorer.
     OpenLogs,
+    /// Open the n-th most recent capture (0 = newest) in the editor.
+    OpenRecent(u8),
     /// Exit ClipFrame.
     Quit,
 }

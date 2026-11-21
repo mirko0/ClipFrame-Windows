@@ -6,6 +6,7 @@ use cf_core::config::{self, Config, LoadOutcome};
 use cf_platform::paths::AppPaths;
 
 use crate::capture::Delivery;
+use crate::capture::history::HistoryStore;
 use crate::editor::EditorOptions;
 
 /// Loads the settings file, falling back to defaults (and logging why) on failure.
@@ -28,17 +29,26 @@ pub fn delivery(config: &Config, paths: &AppPaths) -> Delivery {
         .output
         .auto_save
         .then(|| config.output.captures_dir(&paths.default_captures_dir));
-    let editor = config.editor.open_after_capture.then(|| EditorOptions {
+    let editor = EditorOptions {
         update_clipboard: config.clipboard.update_on_edit,
         save_dir: config.output.captures_dir(&paths.default_captures_dir),
         fallback_dir: paths.fallback_captures_dir.clone(),
         spotlight_dim: config.editor.spotlight_opacity(),
+        naming: config.output.naming(),
+    };
+    let history = (config.history.keep > 0).then(|| HistoryStore {
+        dir: paths.history_dir.clone(),
+        keep: usize::from(config.history.keep),
     });
     Delivery {
         save_dir,
         fallback_dir: paths.fallback_captures_dir.clone(),
+        naming: config.output.naming(),
         copy_to_clipboard: config.clipboard.copy_on_capture,
+        history,
+        toast: config.notifications.toast,
         editor,
+        open_editor: config.editor.open_after_capture,
     }
 }
 

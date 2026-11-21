@@ -32,6 +32,7 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
 tray-icon = "0.26"
 windows = "0.62"
+windows-core = "0.62"
 windows-numerics = "0.3"
 winit = "0.30"
 winresource = "0.1"

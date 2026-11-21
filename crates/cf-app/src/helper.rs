@@ -11,6 +11,8 @@ use std::time::Instant;
 use anyhow::Context as _;
 use cf_core::capture_request::CaptureRequest;
 use cf_core::config::Config;
+use cf_core::encode;
+use cf_core::image::Image;
 use cf_platform::ipc::{self, RequestWindow};
 use cf_platform::paths::AppPaths;
 use cf_platform::single_instance::{InstanceError, SingleInstance};
@@ -21,7 +23,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::capture::{CaptureController, Delivery, Waker};
-use crate::settings;
+use crate::{settings, tray_icon_image};
 
 /// Command-line flag that starts the helper instead of the tray.
 pub const FLAG: &str = "--capture-helper";
@@ -93,6 +95,9 @@ impl Helper {
     }
 
     fn start(&mut self, event_loop: &ActiveEventLoop) {
+        if self.config.notifications.toast {
+            register_notifications(&self.paths);
+        }
         let proxy = self.proxy.clone();
         let window = RequestWindow::create(move |code| {
             if let Some(request) = CaptureRequest::from_code(code) {
@@ -131,6 +136,26 @@ impl Helper {
         } else if !self.keep_alive.is_idle() {
             self.keep_alive.mark_idle(Instant::now());
         }
+    }
+}
+
+/// Writes the app icon next to the state file and registers it for toast headers.
+fn register_notifications(paths: &AppPaths) {
+    let icon = paths.state_file.with_file_name("icon.png");
+    if !icon.exists() {
+        let size = u32::try_from(tray_icon_image::SIZE).unwrap_or(32);
+        let mut bgra = tray_icon_image::rgba();
+        bgra.chunks_exact_mut(4).for_each(|px| px.swap(0, 2));
+        let written = Image::from_bgra(size, size, bgra)
+            .context("icon size")
+            .and_then(|image| Ok(encode::png(&image)?))
+            .and_then(|png| Ok(std::fs::write(&icon, png)?));
+        if let Err(err) = written {
+            tracing::debug!("could not write the notification icon: {err:#}");
+        }
+    }
+    if let Err(err) = cf_platform::toast::register(icon.exists().then_some(icon.as_path())) {
+        tracing::warn!("could not register for notifications: {err}");
     }
 }
 

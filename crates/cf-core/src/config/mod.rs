@@ -13,6 +13,7 @@ pub use store::{ConfigError, LoadOutcome, load_or_create, save};
 
 use crate::capture_mode::CaptureMode;
 use crate::hotkey::{DEFAULT_CAPTURE_HOTKEY, Hotkey};
+use crate::naming::{DEFAULT_TEMPLATE, Naming};
 
 /// Schema version written by this build.
 pub const CURRENT_VERSION: u32 = 1;
@@ -35,6 +36,10 @@ pub struct Config {
     pub performance: PerformanceConfig,
     /// The annotation editor.
     pub editor: EditorConfig,
+    /// Notifications after a capture.
+    pub notifications: NotificationsConfig,
+    /// Recent captures kept for reopening.
+    pub history: HistoryConfig,
 }
 
 impl Default for Config {
@@ -47,7 +52,37 @@ impl Default for Config {
             clipboard: ClipboardConfig::default(),
             performance: PerformanceConfig::default(),
             editor: EditorConfig::default(),
+            notifications: NotificationsConfig::default(),
+            history: HistoryConfig::default(),
         }
+    }
+}
+
+/// Notifications after a capture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationsConfig {
+    /// Show a toast when a capture is saved or copied and the editor doesn't open.
+    pub toast: bool,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self { toast: true }
+    }
+}
+
+/// Recent captures, kept on disk (never in memory) for the tray's "Recent" menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistoryConfig {
+    /// How many recent captures to keep; 0 turns history off.
+    pub keep: u16,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        Self { keep: 20 }
     }
 }
 
@@ -103,6 +138,11 @@ pub struct OutputConfig {
     pub auto_save: bool,
     /// Folder for saved captures; `None` uses the platform default (`Pictures\ClipFrame`).
     pub save_dir: Option<PathBuf>,
+    /// File name template: `{date}` `{time}` `{year}` `{month}` `{day}` `{hour}` `{minute}`
+    /// `{second}` `{app}` `{title}` `{n}` (see [`crate::naming`]).
+    pub file_name: String,
+    /// Save into a `YYYY-MM` subfolder per month.
+    pub date_folders: bool,
 }
 
 impl Default for OutputConfig {
@@ -110,6 +150,8 @@ impl Default for OutputConfig {
         Self {
             auto_save: true,
             save_dir: None,
+            file_name: DEFAULT_TEMPLATE.to_owned(),
+            date_folders: false,
         }
     }
 }
@@ -154,6 +196,14 @@ impl OutputConfig {
         self.save_dir
             .clone()
             .unwrap_or_else(|| default_dir.to_path_buf())
+    }
+
+    /// How saved files are named.
+    pub fn naming(&self) -> Naming {
+        Naming {
+            template: self.file_name.clone(),
+            date_folders: self.date_folders,
+        }
     }
 }
 

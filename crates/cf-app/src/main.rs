@@ -14,6 +14,7 @@ mod helper;
 mod helper_client;
 mod hotkeys;
 mod logging;
+mod pin;
 mod settings;
 mod tray;
 mod tray_icon_image;

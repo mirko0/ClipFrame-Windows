@@ -275,6 +275,7 @@ dependencies = [
  "cf-platform",
  "cf-render",
  "global-hotkey",
+ "tempfile",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -312,6 +313,7 @@ dependencies = [
  "raw-window-handle",
  "thiserror 2.0.21",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

@@ -9,6 +9,8 @@ pub mod paths;
 pub mod shell;
 
 #[cfg(windows)]
+pub mod animation;
+#[cfg(windows)]
 pub mod clipboard;
 #[cfg(windows)]
 mod com;
@@ -34,6 +36,8 @@ pub mod ocr;
 pub mod screen_capture;
 #[cfg(windows)]
 pub mod single_instance;
+#[cfg(windows)]
+pub mod snipping;
 #[cfg(windows)]
 pub mod startup;
 #[cfg(windows)]

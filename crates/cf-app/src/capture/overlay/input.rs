@@ -64,6 +64,13 @@ impl Overlay {
     }
 
     fn on_left_down(&mut self, index: usize, p: Point) -> Outcome {
+        match self.on_mode_bar(index, p) {
+            Some(super::modebar::Spot::Button(i)) => {
+                return self.on_command(super::modebar::ITEMS[i].2);
+            }
+            Some(super::modebar::Spot::Panel) => return Outcome::Continue,
+            None => {}
+        }
         if self.options.mode == CaptureMode::Monitor {
             return self
                 .selection

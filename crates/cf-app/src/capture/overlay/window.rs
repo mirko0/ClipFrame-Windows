@@ -40,6 +40,10 @@ impl OverlayWindow {
             .with_inner_size(size)
             .with_skip_taskbar(true);
         let window = event_loop.create_window(attributes)?;
+        // The frozen screen must appear in place, not zoom or fade in.
+        if !cf_platform::animation::disable(&window) {
+            tracing::debug!("could not turn off the overlay window animation");
+        }
         if window.inner_size() != size {
             // Created across a DPI boundary; Windows may have rescaled it.
             let _ = window.request_inner_size(size);

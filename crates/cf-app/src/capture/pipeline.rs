@@ -155,6 +155,7 @@ pub fn save(dir: &Path, naming: &Naming, source: &Source, png: &[u8]) -> anyhow:
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     std::fs::write(&path, png).with_context(|| format!("writing {}", path.display()))?;
+    super::cleanup::record_saved(&path);
     Ok(path)
 }
 
@@ -193,7 +194,10 @@ fn run_export(
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| std::fs::write(path, &png));
         match written {
-            Ok(()) => tracing::info!(path = %path.display(), "edited image saved"),
+            Ok(()) => {
+                super::cleanup::record_saved(path);
+                tracing::info!(path = %path.display(), "edited image saved");
+            }
             Err(err) => {
                 tracing::warn!("could not write {}: {err}", path.display());
                 let saved = save(fallback_dir, &Naming::default(), &Source::default(), &png)?;

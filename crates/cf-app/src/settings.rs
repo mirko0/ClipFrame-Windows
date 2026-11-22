@@ -6,6 +6,7 @@ use cf_core::config::{self, Config, LoadOutcome};
 use cf_platform::paths::AppPaths;
 
 use crate::capture::Delivery;
+use crate::capture::cleanup::{self, Cleanup};
 use crate::capture::history::HistoryStore;
 use crate::editor::EditorOptions;
 
@@ -50,6 +51,18 @@ pub fn delivery(config: &Config, paths: &AppPaths) -> Delivery {
         editor,
         open_editor: config.editor.open_after_capture,
     }
+}
+
+/// Starts recording saved files and deletes expired captures in the background.
+pub fn clean_up(config: &Config, paths: &AppPaths) {
+    let ledger = cleanup::ledger_path(&paths.state_file);
+    cleanup::use_ledger(ledger.clone());
+    cleanup::start(Cleanup {
+        default_dir: paths.default_captures_dir.clone(),
+        captures_dir: config.output.captures_dir(&paths.default_captures_dir),
+        ledger,
+        days: config.output.delete_after_days,
+    });
 }
 
 fn log_load_outcome(path: &Path, outcome: &LoadOutcome) {

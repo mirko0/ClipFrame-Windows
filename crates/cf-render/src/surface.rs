@@ -87,7 +87,10 @@ impl WindowSurface {
         self.bind_back_buffer()
     }
 
-    /// Draws one frame with `paint` and presents it (vsync).
+    /// Draws one frame with `paint` and presents it without waiting for the display's
+    /// refresh: Windows composes the newest frame at the next refresh and drops older ones.
+    /// (Waiting for vsync here blocked the thread once per window, so with an overlay window
+    /// on each monitor the pointer fell behind on the second one.)
     ///
     /// # Errors
     /// [`GpuError`] when drawing or presenting fails (e.g. the GPU was reset).
@@ -99,7 +102,7 @@ impl WindowSurface {
         // SAFETY: see above; Present on a valid flip-model swap chain.
         unsafe {
             self.dc.EndDraw(None, None)?;
-            self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()?;
+            self.swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;
         }
         Ok(())
     }

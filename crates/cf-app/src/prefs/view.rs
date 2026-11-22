@@ -1,14 +1,16 @@
 //! Layout, hit-testing and drawing of the settings window (window pixels).
 
-use cf_render::{Canvas, Color, LineDash, RectF, Stroke};
+use cf_render::{Canvas, Color, RectF};
 
-use super::model::{Kind, Page, Value};
+use super::home::{self, HomeButton};
+use super::model::{HOME, Kind, Page, Value};
+use super::widgets;
 
 /// Window size at 100 % scaling.
 pub const WIDTH: f32 = 880.0;
 pub const HEIGHT: f32 = 600.0;
 const SIDEBAR: f32 = 200.0;
-const PAD: f32 = 32.0;
+pub const PAD: f32 = 32.0;
 const ROW_TOP: f32 = 96.0;
 const SETUP_ROW_TOP: f32 = 200.0;
 const ROW_HEIGHT: f32 = 80.0;
@@ -35,13 +37,27 @@ pub enum Target {
     Back,
     Next,
     CaptureNow,
+    /// A home-page button.
+    Home(HomeButton),
+    /// The `n`-th recent capture on the home page.
+    Recent(usize),
 }
 
-/// Where everything is for `page` (index into the mode's pages) at `scale`.
-pub fn layout(mode: Mode, pages: &[Page], page: usize, scale: f32) -> Vec<(RectF, Target)> {
+/// Where everything is for `page` (index into the mode's pages) at `scale`; `thumbs`
+/// recent captures are shown on the home page.
+pub fn layout(
+    mode: Mode,
+    pages: &[Page],
+    page: usize,
+    scale: f32,
+    thumbs: usize,
+) -> Vec<(RectF, Target)> {
     let mut out = Vec::new();
     if mode == Mode::Settings {
         nav_targets(pages.len(), scale, &mut out);
+        if page == HOME {
+            home::targets(thumbs, scale, &mut out);
+        }
     }
     let top = if mode == Mode::Settings {
         ROW_TOP
@@ -156,11 +172,11 @@ fn panel() -> Color {
     Color::rgba8(0x26, 0x26, 0x2C, 0xFF)
 }
 
-fn field() -> Color {
+pub fn field() -> Color {
     Color::rgba8(0x30, 0x30, 0x38, 0xFF)
 }
 
-fn field_hover() -> Color {
+pub fn field_hover() -> Color {
     Color::rgba8(0x3A, 0x3A, 0x44, 0xFF)
 }
 
@@ -246,125 +262,11 @@ pub fn row(canvas: &Canvas<'_>, mode: Mode, control: RectF, look: &RowLook<'_>, 
         canvas.draw_text(&block, left, label_y + 22.0 * s, muted());
     }
     match look.kind {
-        Kind::Toggle => toggle(canvas, control, matches!(look.value, Value::Bool(true)), s),
-        Kind::Choice(options) => choice(canvas, control, options, look, s),
-        Kind::Hotkey { .. } | Kind::Text | Kind::Folder => boxed(canvas, control, look, s),
-    }
-}
-
-fn toggle(canvas: &Canvas<'_>, control: RectF, on: bool, s: f32) {
-    let (w, h) = (46.0 * s, 24.0 * s);
-    let pill = RectF::new(control.right() - w, control.y + (control.h - h) / 2.0, w, h);
-    canvas.fill_rounded(pill, h / 2.0, if on { accent() } else { field_hover() });
-    let knob = h - 8.0 * s;
-    let x = if on {
-        pill.right() - 4.0 * s - knob
-    } else {
-        pill.x + 4.0 * s
-    };
-    canvas.fill_ellipse(RectF::new(x, pill.y + 4.0 * s, knob, knob), ink());
-    let text = if on { "On" } else { "Off" };
-    if let Some(block) = canvas.text_sized(text, 13.0 * s, false) {
-        canvas.draw_text(
-            &block,
-            pill.x - block.width - 10.0 * s,
-            pill.y + (h - block.height) / 2.0,
-            muted(),
-        );
-    }
-}
-
-fn choice(canvas: &Canvas<'_>, control: RectF, options: &[&str], look: &RowLook<'_>, s: f32) {
-    canvas.fill_rounded(
-        control,
-        6.0 * s,
-        if look.hovered { field_hover() } else { field() },
-    );
-    let index = match look.value {
-        Value::Choice(i) => *i,
-        _ => 0,
-    };
-    let text = options.get(index).copied().unwrap_or("");
-    centered(canvas, text, control, 14.0 * s, ink());
-    for (glyph, x) in [
-        ("‹", control.x + 16.0 * s),
-        ("›", control.right() - 16.0 * s),
-    ] {
-        if let Some(block) = canvas.text_sized(glyph, 20.0 * s, true) {
-            let y = control.y + (control.h - block.height) / 2.0 - 1.0 * s;
-            canvas.draw_text(&block, x - block.width / 2.0, y, muted());
+        Kind::Toggle => {
+            widgets::toggle(canvas, control, matches!(look.value, Value::Bool(true)), s);
         }
-    }
-}
-
-fn boxed(canvas: &Canvas<'_>, control: RectF, look: &RowLook<'_>, s: f32) {
-    let editing = look.editing.is_some();
-    canvas.fill_rounded(
-        control,
-        6.0 * s,
-        if look.hovered || editing {
-            field_hover()
-        } else {
-            field()
-        },
-    );
-    if editing {
-        let frame = Stroke {
-            width: 1.5 * s,
-            color: accent(),
-            dash: LineDash::Solid,
-        };
-        canvas.stroke_rect(control.inflate(-0.75 * s), &frame);
-    }
-    let inner = control.inflate(-12.0 * s);
-    let (text, color) = display_text(look);
-    let Some(block) = canvas.text_sized(&text, 14.0 * s, false) else {
-        return;
-    };
-    let mut width = inner.w;
-    if let Kind::Folder = look.kind
-        && let Some(change) = canvas.text_sized("Change…", 13.0 * s, true)
-    {
-        width -= change.width + 12.0 * s;
-        let y = control.y + (control.h - change.height) / 2.0;
-        canvas.draw_text(&change, inner.right() - change.width, y, accent());
-    }
-    let y = control.y + (control.h - block.height) / 2.0;
-    canvas.push_clip(RectF::new(inner.x, control.y, width, control.h));
-    // Long text shows its end (the part being typed, or the folder's own name).
-    let x = if block.width > width {
-        inner.x + width - block.width
-    } else {
-        inner.x
-    };
-    canvas.draw_text(&block, x, y, color);
-    if let (Some(_), Kind::Text) = (look.editing, look.kind) {
-        let caret = (x + block.width + 1.0 * s).min(inner.x + width - 1.0 * s);
-        let stroke = Stroke {
-            width: 1.5 * s,
-            color: accent(),
-            dash: LineDash::Solid,
-        };
-        canvas.stroke_line((caret, y), (caret, y + block.height), &stroke);
-    }
-    canvas.pop_clip();
-}
-
-fn display_text(look: &RowLook<'_>) -> (String, Color) {
-    match (look.kind, look.editing, look.value) {
-        (Kind::Hotkey { optional }, Some(_), _) => {
-            let hint = if optional {
-                "Press a shortcut… (Backspace clears)"
-            } else {
-                "Press a shortcut… (Esc cancels)"
-            };
-            (hint.to_owned(), accent())
-        }
-        (Kind::Text, Some(text), _) => (text.to_owned(), ink()),
-        (Kind::Hotkey { .. }, None, Value::Hotkey(Some(key))) => (key.to_string(), ink()),
-        (Kind::Hotkey { .. }, None, Value::Hotkey(None)) => ("Not set".to_owned(), muted()),
-        (_, _, Value::Text(text)) => (text.clone(), ink()),
-        _ => (String::new(), ink()),
+        Kind::Choice(options) => widgets::choice(canvas, control, options, look, s),
+        Kind::Hotkey { .. } | Kind::Text | Kind::Folder => widgets::boxed(canvas, control, look, s),
     }
 }
 
@@ -385,20 +287,7 @@ pub fn setup_buttons(
             Target::CaptureNow => ("Take a capture now", true),
             _ => continue,
         };
-        let hovered = hover == Some(*target);
-        let fill = match (primary, hovered) {
-            (true, false) => accent(),
-            (true, true) => Color::rgba8(0x6F, 0xB6, 0xFF, 0xFF),
-            (false, false) => field(),
-            (false, true) => field_hover(),
-        };
-        canvas.fill_rounded(*rect, 8.0 * s, fill);
-        let color = if primary {
-            Color::rgba8(0x10, 0x14, 0x1C, 0xFF)
-        } else {
-            ink()
-        };
-        centered(canvas, text, *rect, 14.0 * s, color);
+        button(canvas, *rect, text, (primary, hover == Some(*target)), s);
     }
     let label = format!("Step {} of {count}", index + 1);
     if let Some(block) = canvas.text_sized(&label, 13.0 * s, false) {
@@ -409,6 +298,24 @@ pub fn setup_buttons(
             muted(),
         );
     }
+}
+
+/// A filled button; `look` is (primary, hovered).
+pub fn button(canvas: &Canvas<'_>, rect: RectF, text: &str, look: (bool, bool), s: f32) {
+    let (primary, hovered) = look;
+    let fill = match (primary, hovered) {
+        (true, false) => accent(),
+        (true, true) => Color::rgba8(0x6F, 0xB6, 0xFF, 0xFF),
+        (false, false) => field(),
+        (false, true) => field_hover(),
+    };
+    canvas.fill_rounded(rect, 8.0 * s, fill);
+    let color = if primary {
+        Color::rgba8(0x10, 0x14, 0x1C, 0xFF)
+    } else {
+        ink()
+    };
+    centered(canvas, text, rect, 14.0 * s, color);
 }
 
 /// A short message at the bottom of the content area.
@@ -424,7 +331,7 @@ pub fn status(canvas: &Canvas<'_>, mode: Mode, text: &str, s: f32) {
     }
 }
 
-fn centered(canvas: &Canvas<'_>, text: &str, rect: RectF, px: f32, color: Color) {
+pub fn centered(canvas: &Canvas<'_>, text: &str, rect: RectF, px: f32, color: Color) {
     if let Some(block) = canvas.text_sized(text, px, true) {
         let (x, y) = (
             rect.x + (rect.w - block.width) / 2.0,
@@ -458,7 +365,7 @@ mod tests {
             .iter()
             .flat_map(|(mode, pages)| (0..pages.len()).map(move |page| (*mode, *pages, page)));
         for (mode, pages, page) in pages {
-            let targets = layout(mode, pages, page, 1.5);
+            let targets = layout(mode, pages, page, 1.5, home::MAX_THUMBS);
             assert_apart(&targets, &format!("{mode:?} page {page}"));
             assert!(
                 targets
@@ -477,9 +384,9 @@ mod tests {
 
     #[test]
     fn setup_has_back_only_after_the_first_step_and_capture_on_the_last() {
-        let first = layout(Mode::Setup, &SETUP, 0, 1.0);
+        let first = layout(Mode::Setup, &SETUP, 0, 1.0, 0);
         assert!(first.iter().all(|(_, t)| *t != Target::Back));
-        let last = layout(Mode::Setup, &SETUP, SETUP.len() - 1, 1.0);
+        let last = layout(Mode::Setup, &SETUP, SETUP.len() - 1, 1.0, 0);
         assert!(last.iter().any(|(_, t)| *t == Target::CaptureNow));
         assert_eq!(hit(&last, (0.0, 0.0)), None);
     }

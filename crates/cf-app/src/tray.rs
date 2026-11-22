@@ -20,6 +20,7 @@ const RECENT_SHOWN: usize = 10;
 /// Menu layout after the "Recent captures" submenu; `None` is a separator.
 const MENU_LAYOUT: &[Option<(&str, Action)>] = &[
     None,
+    Some(("Open ClipFrame", Action::OpenHome)),
     Some(("Settings…", Action::OpenSettings)),
     Some(("Open captures folder", Action::OpenCapturesFolder)),
     Some(("Edit settings file", Action::OpenConfig)),

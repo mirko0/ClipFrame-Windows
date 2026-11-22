@@ -3,6 +3,7 @@
 //! The GPU device lives as long as this controller, i.e. as long as the helper process. When
 //! the helper exits after its idle period, the driver memory goes with it (see PLAN §2).
 
+pub mod cleanup;
 mod frozen;
 pub mod history;
 mod overlay;
@@ -193,7 +194,10 @@ impl CaptureController {
                 self.open_recent(event_loop, usize::from(index), delivery)
             }
             // Handled by the helper (they aren't captures).
-            CaptureRequest::Settings | CaptureRequest::Onboarding | CaptureRequest::Quit => Ok(()),
+            CaptureRequest::Settings
+            | CaptureRequest::Home
+            | CaptureRequest::Onboarding
+            | CaptureRequest::Quit => Ok(()),
         };
         if let Err(err) = result {
             tracing::error!("capture failed: {err:#}");

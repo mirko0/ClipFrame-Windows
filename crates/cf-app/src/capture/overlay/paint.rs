@@ -2,6 +2,7 @@
 //! Inputs are virtual-desktop pixels; drawing is in the window's physical pixels, with UI
 //! element sizes multiplied by the monitor's scale.
 
+use cf_core::capture_mode::CaptureMode;
 use cf_core::geometry::{Point, Rect};
 use cf_render::{Canvas, Color, GpuImage, RectF};
 
@@ -45,6 +46,9 @@ pub struct Scene {
     /// BGRA pixel under the pointer.
     pub pointer_color: Option<[u8; 4]>,
     pub hint: String,
+    pub mode: CaptureMode,
+    /// The mode bar (hidden while dragging).
+    pub show_bar: bool,
 }
 
 pub fn paint(canvas: &Canvas<'_>, target: &Target<'_>, scene: &Scene) {
@@ -65,15 +69,9 @@ pub fn paint(canvas: &Canvas<'_>, target: &Target<'_>, scene: &Scene) {
         if scene.show_loupe {
             paint_loupe(canvas, target, cursor, scene.pointer_color);
         }
-        if !scene.hint.is_empty() {
-            let s = target.scale;
-            pill(
-                canvas,
-                s,
-                (w / 2.0, 16.0 * s),
-                Anchor::TopCenter,
-                &scene.hint,
-            );
+        if scene.show_bar {
+            let local = to_local(target.monitor, cursor);
+            super::modebar::paint(canvas, target.scale, scene.mode, Some(local), &scene.hint);
         }
     }
 }
@@ -203,7 +201,6 @@ fn loupe_source(monitor: Rect, cursor: Point) -> RectF {
 enum Anchor {
     TopLeft,
     BottomLeft,
-    TopCenter,
 }
 
 /// Text on a dark rounded background, positioned by `anchor` at `at`.
@@ -217,7 +214,6 @@ fn pill(canvas: &Canvas<'_>, scale: f32, at: (f32, f32), anchor: Anchor, text: &
     let (left, top) = match anchor {
         Anchor::TopLeft => at,
         Anchor::BottomLeft => (at.0, at.1 - height),
-        Anchor::TopCenter => (at.0 - width / 2.0, at.1),
     };
     let rect = RectF::new(left.round(), top.round(), width.round(), height.round());
     canvas.fill_rounded(rect, 5.0 * scale, pill_bg());

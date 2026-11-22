@@ -17,6 +17,8 @@ use velopack::{UpdateCheck, UpdateManager, VelopackApp, VelopackAsset};
 
 /// Message code telling the tray to exit.
 pub const QUIT_CODE: u32 = 2;
+/// Message code: check for updates now and say what was found (the main window's button).
+pub const CHECK_CODE: u32 = 6;
 /// Longest wait for running copies to exit before files are replaced or removed.
 const QUIT_WAIT: Duration = Duration::from_secs(5);
 
@@ -131,7 +133,8 @@ fn download(manager: &UpdateManager) -> anyhow::Result<Option<Ready>> {
 /// When this copy isn't installed by Velopack or the updater can't start.
 pub fn install_and_restart(repo: &str, ready: &Ready) -> anyhow::Result<()> {
     let repo = github_repo(repo).ok_or_else(|| anyhow::anyhow!("invalid updates.repo"))?;
-    manager(&repo)?.apply_updates_and_restart(&*ready.asset)?;
+    // Back to the tray quietly, like before the update.
+    manager(&repo)?.apply_updates_and_restart_with_args(&*ready.asset, [crate::BACKGROUND_FLAG])?;
     Ok(())
 }
 

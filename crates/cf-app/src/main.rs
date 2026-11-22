@@ -29,13 +29,19 @@ use cf_core::capture_request::CaptureRequest;
 use cf_platform::paths::AppPaths;
 use cf_platform::single_instance::{InstanceError, SingleInstance};
 
+/// Starts the tray without opening the main window (sign-in, after an update).
+pub const BACKGROUND_FLAG: &str = "--background";
+
 /// Per-session mutex name; one tray per logged-in user.
 const INSTANCE_NAME: &str = r"Local\ClipFrame.SingleInstance";
 
 /// Which process this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
-    Tray,
+    /// `background`: don't open the main window.
+    Tray {
+        background: bool,
+    },
     Helper(CaptureRequest),
 }
 
@@ -46,13 +52,16 @@ impl Role {
                 let request = args.next().and_then(|a| CaptureRequest::from_arg(&a));
                 Self::Helper(request.unwrap_or(CaptureRequest::Interactive))
             }
-            _ => Self::Tray,
+            Some(flag) => Self::Tray {
+                background: flag == BACKGROUND_FLAG,
+            },
+            None => Self::Tray { background: false },
         }
     }
 
     const fn log_prefix(self) -> &'static str {
         match self {
-            Self::Tray => "clipframe",
+            Self::Tray { .. } => "clipframe",
             Self::Helper(_) => "clipframe-helper",
         }
     }
@@ -75,7 +84,7 @@ fn main() -> ExitCode {
     logging::install_panic_hook();
 
     let result = match role {
-        Role::Tray => run_tray(paths),
+        Role::Tray { background } => run_tray(paths, background),
         Role::Helper(request) => helper::run(paths, request),
     };
     match result {
@@ -87,10 +96,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_tray(paths: AppPaths) -> anyhow::Result<()> {
+fn run_tray(paths: AppPaths, background: bool) -> anyhow::Result<()> {
     let _instance = match SingleInstance::acquire(INSTANCE_NAME) {
         Ok(instance) => instance,
         Err(InstanceError::AlreadyRunning) => {
+            // Started again (Start menu, desktop shortcut): show the running copy's window.
+            // Posting also lets the tray (and through it the helper) bring the window forward.
+            if !background {
+                let posted = cf_platform::ipc::post_request(
+                    cf_platform::ipc::Channel::Tray,
+                    app::SHOW_HOME_CODE,
+                );
+                tracing::debug!(?posted, "asked the running copy to show its window");
+            }
             tracing::info!("another instance is already running; exiting");
             return Ok(());
         }
@@ -102,7 +120,7 @@ fn run_tray(paths: AppPaths) -> anyhow::Result<()> {
         config = %paths.config_file.display(),
         "starting ClipFrame"
     );
-    app::run(paths)
+    app::run(paths, background)
 }
 
 #[cfg(test)]
@@ -115,8 +133,9 @@ mod tests {
 
     #[test]
     fn no_arguments_starts_the_tray() {
-        assert_eq!(role(&[]), Role::Tray);
-        assert_eq!(role(&["--unknown"]), Role::Tray);
+        assert_eq!(role(&[]), Role::Tray { background: false });
+        assert_eq!(role(&["--unknown"]), Role::Tray { background: false });
+        assert_eq!(role(&[BACKGROUND_FLAG]), Role::Tray { background: true });
     }
 
     #[test]

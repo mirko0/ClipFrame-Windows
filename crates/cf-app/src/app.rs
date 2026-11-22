@@ -32,6 +32,8 @@ pub enum AppEvent {
     TrayClick(TrayIconEvent),
     /// A code posted by the capture helper (e.g. "settings changed").
     Remote(u32),
+    /// Win+Shift+S, caught instead of the Snipping Tool.
+    Snip,
     /// An update check finished; `manual` when asked for from the tray menu.
     UpdateChecked {
         outcome: updates::Outcome,
@@ -39,14 +41,17 @@ pub enum AppEvent {
     },
 }
 
-pub fn run(paths: AppPaths) -> anyhow::Result<()> {
+/// Message code: open the main window (ClipFrame was started again).
+pub const SHOW_HOME_CODE: u32 = 5;
+
+pub fn run(paths: AppPaths, background: bool) -> anyhow::Result<()> {
     let event_loop = EventLoop::<AppEvent>::with_user_event()
         .build()
         .context("creating the event loop")?;
     event_loop.set_control_flow(ControlFlow::Wait);
     forward_native_events(&event_loop.create_proxy());
 
-    let mut app = App::new(paths, event_loop.create_proxy());
+    let mut app = App::new(paths, event_loop.create_proxy(), background);
     event_loop
         .run_app(&mut app)
         .context("running the event loop")?;
@@ -86,6 +91,8 @@ fn forward_native_events(proxy: &EventLoopProxy<AppEvent>) {
 struct Services {
     tray: Tray,
     hotkeys: HotkeyService,
+    /// Catches Win+Shift+S while "Use Win+Shift+S" is on.
+    snipping: Option<cf_platform::snipping::Takeover>,
 }
 
 struct App {
@@ -97,10 +104,12 @@ struct App {
     /// Receives codes from the capture helper.
     remote: Option<RequestWindow>,
     update: Option<updates::Ready>,
+    /// Started without opening the main window (`--background`).
+    background: bool,
 }
 
 impl App {
-    fn new(paths: AppPaths, proxy: EventLoopProxy<AppEvent>) -> Self {
+    fn new(paths: AppPaths, proxy: EventLoopProxy<AppEvent>, background: bool) -> Self {
         let config = load_config(&paths.config_file);
         Self {
             paths,
@@ -110,6 +119,7 @@ impl App {
             proxy,
             remote: None,
             update: None,
+            background,
         }
     }
 
@@ -122,7 +132,12 @@ impl App {
                 tracing::info!("ready");
                 if !AppState::load(&self.paths.state_file).onboarded {
                     helper_client::request(CaptureRequest::Onboarding);
+                } else if !self.background {
+                    helper_client::request(CaptureRequest::Home);
                 }
+                let exe = std::env::current_exe().unwrap_or_default();
+                cf_platform::startup::refresh(&exe);
+                crate::settings::clean_up(&self.config, &self.paths);
                 self.check_for_updates(false);
             }
             Err(err) => {
@@ -201,8 +216,11 @@ impl App {
                 if let Some(services) = self.services.as_mut() {
                     services.hotkeys.suspend();
                 }
+                self.sync_snipping(false);
             }
             prefs::RESUME_HOTKEYS_CODE => self.apply_hotkeys(),
+            SHOW_HOME_CODE => helper_client::request(CaptureRequest::Home),
+            updates::CHECK_CODE => self.check_for_updates(true),
             prefs::RELOAD_CODE => {
                 tracing::debug!("settings changed in the settings window");
                 self.perform(Action::ReloadConfig, event_loop);
@@ -237,6 +255,31 @@ impl App {
         services
             .tray
             .show_capture_hotkey(self.config.hotkeys.capture, capture_ok);
+        self.sync_snipping(self.config.hotkeys.replace_snipping_tool);
+    }
+
+    /// Starts or stops catching Win+Shift+S.
+    fn sync_snipping(&mut self, on: bool) {
+        let Some(services) = self.services.as_mut() else {
+            return;
+        };
+        if !on {
+            services.snipping = None;
+            return;
+        }
+        if services.snipping.is_some() {
+            return;
+        }
+        let proxy = std::sync::Mutex::new(self.proxy.clone());
+        let started = cf_platform::snipping::Takeover::start(move || {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(AppEvent::Snip);
+            }
+        });
+        match started {
+            Ok(takeover) => services.snipping = Some(takeover),
+            Err(err) => tracing::warn!("could not take over Win+Shift+S: {err}"),
+        }
     }
 
     fn resolve_action(&self, event: &AppEvent) -> Option<Action> {
@@ -246,7 +289,8 @@ impl App {
                 services.hotkeys.action_for(e.id)
             }
             AppEvent::Menu(e) => services.tray.action_for(&e.id),
-            AppEvent::TrayClick(TrayIconEvent::Click {
+            AppEvent::Snip
+            | AppEvent::TrayClick(TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
                 ..
@@ -270,6 +314,7 @@ impl App {
                     .captures_dir(&self.paths.default_captures_dir);
                 report(action, shell::open_folder(&dir));
             }
+            Action::OpenHome => helper_client::request(CaptureRequest::Home),
             Action::OpenSettings => helper_client::request(CaptureRequest::Settings),
             Action::CheckForUpdates => self.check_for_updates(true),
             Action::InstallUpdate => self.install_update(event_loop),
@@ -315,6 +360,7 @@ fn create_services(paths: &AppPaths) -> anyhow::Result<Services> {
     Ok(Services {
         tray: Tray::new(paths.history_dir.clone()).context("creating the tray icon")?,
         hotkeys: HotkeyService::new().context("creating the hotkey manager")?,
+        snipping: None,
     })
 }
 

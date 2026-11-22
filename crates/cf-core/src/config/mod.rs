@@ -119,6 +119,8 @@ pub struct HotkeyConfig {
     pub capture: Hotkey,
     /// Captures the previously selected region again; disabled when `None`.
     pub repeat_last: Option<Hotkey>,
+    /// Win+Shift+S opens ClipFrame instead of the Windows Snipping Tool.
+    pub replace_snipping_tool: bool,
 }
 
 impl Default for HotkeyConfig {
@@ -126,6 +128,7 @@ impl Default for HotkeyConfig {
         Self {
             capture: DEFAULT_CAPTURE_HOTKEY,
             repeat_last: None,
+            replace_snipping_tool: false,
         }
     }
 }
@@ -168,6 +171,8 @@ pub struct OutputConfig {
     pub file_name: String,
     /// Save into a `YYYY-MM` subfolder per month.
     pub date_folders: bool,
+    /// Delete saved captures older than this many days; 0 keeps them forever.
+    pub delete_after_days: u16,
 }
 
 impl Default for OutputConfig {
@@ -177,6 +182,7 @@ impl Default for OutputConfig {
             save_dir: None,
             file_name: DEFAULT_TEMPLATE.to_owned(),
             date_folders: false,
+            delete_after_days: 0,
         }
     }
 }

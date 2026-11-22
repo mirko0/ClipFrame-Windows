@@ -24,7 +24,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::window::WindowId;
 
 use crate::capture::{CaptureController, Delivery, Waker};
-use crate::prefs::{Mode, PrefsOutcome, PrefsWindow};
+use crate::prefs::{self, Mode, PrefsOutcome, PrefsWindow};
 use crate::{settings, tray_icon_image};
 
 /// Command-line flag that starts the helper instead of the tray.
@@ -76,6 +76,8 @@ struct Helper {
     initial: Option<CaptureRequest>,
     /// The settings window or first-run setup, when open.
     prefs: Option<PrefsWindow>,
+    /// Wakes the event loop from worker threads.
+    waker: Waker,
 }
 
 impl Helper {
@@ -85,7 +87,7 @@ impl Helper {
         let waker: Waker = Arc::new(move || {
             let _ = wake_proxy.send_event(HelperEvent::Wake);
         });
-        let capture = CaptureController::new(paths.state_file.clone(), waker);
+        let capture = CaptureController::new(paths.state_file.clone(), waker.clone());
         let keep_alive = KeepAlive::new(config.performance.keep_gpu_ready.idle_timeout());
         Self {
             paths,
@@ -96,10 +98,12 @@ impl Helper {
             proxy,
             initial: Some(initial),
             prefs: None,
+            waker,
         }
     }
 
     fn start(&mut self, event_loop: &ActiveEventLoop) {
+        settings::clean_up(&self.config, &self.paths);
         if self.config.notifications.toast {
             register_notifications(&self.paths);
         }
@@ -132,8 +136,11 @@ impl Helper {
                 event_loop.exit();
                 return;
             }
-            CaptureRequest::Settings => self.open_prefs(event_loop, Mode::Settings),
-            CaptureRequest::Onboarding => self.open_prefs(event_loop, Mode::Setup),
+            CaptureRequest::Home => self.open_prefs(event_loop, Mode::Settings, prefs::HOME),
+            CaptureRequest::Settings => {
+                self.open_prefs(event_loop, Mode::Settings, prefs::FIRST_SETTINGS);
+            }
+            CaptureRequest::Onboarding => self.open_prefs(event_loop, Mode::Setup, 0),
             _ => {
                 let delivery = self.delivery();
                 self.capture
@@ -143,9 +150,11 @@ impl Helper {
         self.track_idle();
     }
 
-    fn open_prefs(&mut self, event_loop: &ActiveEventLoop, mode: Mode) {
-        if let Some(prefs) = &self.prefs {
-            prefs.raise();
+    fn open_prefs(&mut self, event_loop: &ActiveEventLoop, mode: Mode, page: usize) {
+        if let Some(prefs) = self.prefs.as_mut() {
+            prefs.raise(page);
+            let waker = self.waker.clone();
+            prefs.load_thumbs(move || waker());
             return;
         }
         if mode == Mode::Setup {
@@ -159,10 +168,20 @@ impl Helper {
             }
         }
         let opened = self.capture.gpu().and_then(|gpu| {
-            PrefsWindow::open(event_loop, gpu, mode, self.config.clone(), &self.paths)
+            PrefsWindow::open(
+                event_loop,
+                gpu,
+                (mode, page),
+                self.config.clone(),
+                &self.paths,
+            )
         });
         match opened {
-            Ok(prefs) => self.prefs = Some(prefs),
+            Ok(mut prefs) => {
+                let waker = self.waker.clone();
+                prefs.load_thumbs(move || waker());
+                self.prefs = Some(prefs);
+            }
             Err(err) => tracing::error!("could not open settings: {err:#}"),
         }
     }
@@ -184,12 +203,18 @@ impl Helper {
             .prefs
             .as_mut()
             .map_or(PrefsOutcome::Close, |p| p.handle_event(gpu, event));
-        if outcome != PrefsOutcome::Continue {
-            self.prefs = None;
-            tracing::info!("settings closed");
-        }
-        if outcome == PrefsOutcome::CloseAndCapture {
-            self.handle(event_loop, CaptureRequest::Interactive);
+        match outcome {
+            PrefsOutcome::Continue => {}
+            PrefsOutcome::OpenRecent(index) => {
+                self.handle(event_loop, CaptureRequest::OpenRecent(index));
+            }
+            PrefsOutcome::Close | PrefsOutcome::CloseAndCapture => {
+                self.prefs = None;
+                tracing::info!("main window closed");
+                if outcome == PrefsOutcome::CloseAndCapture {
+                    self.handle(event_loop, CaptureRequest::Interactive);
+                }
+            }
         }
         true
     }
@@ -255,7 +280,12 @@ impl ApplicationHandler<HelperEvent> for Helper {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HelperEvent) {
         match event {
             HelperEvent::Request(request) => self.handle(event_loop, request),
-            HelperEvent::Wake => self.capture.on_wake(),
+            HelperEvent::Wake => {
+                self.capture.on_wake();
+                if let (Some(prefs), Ok(gpu)) = (self.prefs.as_mut(), self.capture.gpu()) {
+                    prefs.take_thumbs(gpu);
+                }
+            }
         }
     }
 

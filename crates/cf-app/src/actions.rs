@@ -9,7 +9,9 @@ pub enum Action {
     RepeatLast,
     /// Open the captures folder in Explorer.
     OpenCapturesFolder,
-    /// Open the settings window.
+    /// Open the main window (home page).
+    OpenHome,
+    /// Open the main window on its settings.
     OpenSettings,
     /// Open the settings file in a text editor.
     OpenConfig,

@@ -17,6 +17,7 @@ pub mod image;
 pub mod naming;
 pub mod ocr;
 pub mod output;
+pub mod retention;
 pub mod selection;
 pub mod state;
 pub mod targets;

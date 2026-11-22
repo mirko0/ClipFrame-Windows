@@ -2,26 +2,30 @@
 //! (like the editor), drawn from [`model`] pages. Every change is saved immediately and the
 //! tray is told to reload (it owns the global hotkeys).
 
+mod edit;
+mod home;
 mod model;
 mod view;
+mod widgets;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use cf_core::config::{self, Config};
-use cf_core::hotkey::{Hotkey, Key, Modifiers};
 use cf_core::naming::{self, Source};
 use cf_platform::ipc;
 use cf_platform::paths::AppPaths;
 use cf_render::{Canvas, Gpu, WindowSurface};
-use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey, PhysicalKey};
+use winit::keyboard::{Key as LogicalKey, ModifiersState, NamedKey};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::{CursorIcon, Window, WindowButtons, WindowId};
+use winit::window::{CursorIcon, Window, WindowId};
 
+use self::edit::scale_of;
+use self::home::{HomeButton, HomeLook, Thumb};
 use self::model::{Context, Field, Kind, Page, SETTINGS, SETUP, Value};
+pub use self::model::{FIRST_SETTINGS, HOME};
 pub use self::view::Mode;
 use self::view::{RowLook, Target};
 
@@ -37,11 +41,13 @@ const STATUS_TIME: Duration = Duration::from_millis(2500);
 pub enum PrefsOutcome {
     Continue,
     Close,
-    /// Close, then start a capture ("Take a capture now").
+    /// Close, then start a capture ("Take a capture now", "New capture").
     CloseAndCapture,
+    /// Open the `n`-th recent capture in the editor (the window stays open).
+    OpenRecent(u8),
 }
 
-enum Focus {
+pub(super) enum Focus {
     Text { row: usize, text: String },
     Hotkey { row: usize },
 }
@@ -62,31 +68,24 @@ pub struct PrefsWindow {
     pointer: (f32, f32),
     /// Whether the tray's global shortcuts are paused for recording.
     hotkeys_paused: bool,
+    /// Recent captures on the home page, and those still loading.
+    thumbs: Vec<Thumb>,
+    loading: Option<std::sync::mpsc::Receiver<Vec<home::Loaded>>>,
+    history_dir: PathBuf,
+    captures_dir: PathBuf,
 }
 
 impl PrefsWindow {
     pub fn open(
         event_loop: &ActiveEventLoop,
         gpu: &Gpu,
-        mode: Mode,
+        (mode, page): (Mode, usize),
         config: Config,
         paths: &AppPaths,
     ) -> anyhow::Result<Self> {
-        let title = match mode {
-            Mode::Settings => "ClipFrame settings",
-            Mode::Setup => "Set up ClipFrame",
-        };
-        let window = event_loop.create_window(
-            Window::default_attributes()
-                .with_title(title)
-                .with_resizable(false)
-                .with_enabled_buttons(WindowButtons::CLOSE | WindowButtons::MINIMIZE)
-                .with_visible(false),
-        )?;
+        let started = Instant::now();
+        let window = edit::create_window(event_loop, mode)?;
         let scale = scale_of(&window);
-        let size = PhysicalSize::new(to_px(view::WIDTH * scale), to_px(view::HEIGHT * scale));
-        let _ = window.request_inner_size(size);
-        center_on_pointer_monitor(&window, size);
         let actual = window.inner_size();
         let surface =
             WindowSurface::new(gpu, &window, (actual.width, actual.height), 13.0 * scale)?;
@@ -94,11 +93,12 @@ impl PrefsWindow {
             startup: cf_platform::startup::is_enabled(),
             default_dir: paths.default_captures_dir.clone(),
         };
+        let captures_dir = config.output.captures_dir(&paths.default_captures_dir);
         let prefs = Self {
             surface,
             window,
             mode,
-            page: 0,
+            page,
             config,
             config_file: paths.config_file.clone(),
             ctx,
@@ -108,9 +108,15 @@ impl PrefsWindow {
             modifiers: ModifiersState::empty(),
             pointer: (0.0, 0.0),
             hotkeys_paused: false,
+            thumbs: Vec::new(),
+            loading: None,
+            history_dir: paths.history_dir.clone(),
+            captures_dir,
         };
         prefs.window.set_visible(true);
-        prefs.window.focus_window();
+        let front = cf_platform::focus::bring_to_front(&prefs.window);
+        let elapsed_ms = started.elapsed().as_millis();
+        tracing::debug!(elapsed_ms, front, "main window shown");
         Ok(prefs)
     }
 
@@ -118,10 +124,36 @@ impl PrefsWindow {
         self.window.id()
     }
 
-    /// Shows the window again (when it is requested while already open).
-    pub fn raise(&self) {
+    /// Shows the window again on `page` (when it is requested while already open).
+    pub fn raise(&mut self, page: usize) {
+        if self.mode == Mode::Settings {
+            self.page = page;
+            self.focus = None;
+        }
         self.window.set_minimized(false);
-        self.window.focus_window();
+        if !cf_platform::focus::bring_to_front(&self.window) {
+            tracing::debug!("the main window could not come to the front");
+        }
+        self.window.request_redraw();
+    }
+
+    /// Starts reloading the home page's recent captures (settings mode); `wake` runs when
+    /// they are ready for [`Self::take_thumbs`].
+    pub fn load_thumbs(&mut self, wake: impl FnOnce() + Send + 'static) {
+        if self.mode == Mode::Settings && self.config.history.keep > 0 {
+            let s = scale_of(&self.window);
+            self.loading = home::load_in_background(self.history_dir.clone(), s, wake);
+        }
+    }
+
+    /// Shows thumbnails that finished loading.
+    pub fn take_thumbs(&mut self, gpu: &Gpu) {
+        let loaded = self.loading.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(loaded) = loaded {
+            self.loading = None;
+            self.thumbs = home::upload(gpu, loaded);
+            self.window.request_redraw();
+        }
     }
 
     pub fn deadline(&self) -> Option<Instant> {
@@ -210,7 +242,8 @@ impl PrefsWindow {
     }
 
     fn targets(&self) -> Vec<(cf_render::RectF, Target)> {
-        view::layout(self.mode, self.pages(), self.page, scale_of(&self.window))
+        let s = scale_of(&self.window);
+        view::layout(self.mode, self.pages(), self.page, s, self.thumbs.len())
     }
 
     fn on_click(&mut self) -> PrefsOutcome {
@@ -226,10 +259,36 @@ impl PrefsWindow {
             Some(Target::ChoiceNext(row)) => self.step_choice(row, true),
             Some(Target::Back) => self.page = self.page.saturating_sub(1),
             Some(Target::Next) => return self.next_step(),
-            Some(Target::CaptureNow) => return PrefsOutcome::CloseAndCapture,
+            Some(Target::CaptureNow | Target::Home(HomeButton::NewCapture)) => {
+                return PrefsOutcome::CloseAndCapture;
+            }
+            Some(Target::Home(button)) => self.home_action(button),
+            Some(Target::Recent(index)) => {
+                return u8::try_from(index)
+                    .map_or(PrefsOutcome::Continue, PrefsOutcome::OpenRecent);
+            }
             None => {}
         }
         PrefsOutcome::Continue
+    }
+
+    fn home_action(&mut self, button: HomeButton) {
+        match button {
+            HomeButton::OpenFolder => {
+                if let Err(err) = cf_platform::shell::open_folder(&self.captures_dir) {
+                    self.say(format!("Could not open the folder: {err}"));
+                }
+            }
+            HomeButton::CheckUpdates => {
+                let asked = ipc::post_request(ipc::Channel::Tray, crate::updates::CHECK_CODE);
+                self.say(if matches!(asked, ipc::Posted::Sent { .. }) {
+                    "Checking for updates…"
+                } else {
+                    "ClipFrame isn't running in the tray."
+                });
+            }
+            HomeButton::NewCapture => {}
+        }
     }
 
     fn next_step(&mut self) -> PrefsOutcome {
@@ -307,72 +366,6 @@ impl PrefsWindow {
         PrefsOutcome::Continue
     }
 
-    fn record_hotkey(&mut self, row: usize, event: &KeyEvent) {
-        let Some(field) = self.field(row) else { return };
-        let optional = matches!(field.kind(), Kind::Hotkey { optional: true });
-        match &event.logical_key {
-            LogicalKey::Named(NamedKey::Escape) => return,
-            LogicalKey::Named(NamedKey::Backspace | NamedKey::Delete) if optional => {
-                return self.apply(field, Value::Hotkey(None));
-            }
-            _ => {}
-        }
-        let PhysicalKey::Code(code) = event.physical_key else {
-            self.focus = Some(Focus::Hotkey { row });
-            return;
-        };
-        let Some(key) = Key::from_code_name(&format!("{code:?}")) else {
-            // A modifier on its own (or an unusable key): keep listening.
-            self.focus = Some(Focus::Hotkey { row });
-            return;
-        };
-        let m = self.modifiers;
-        let modifiers = Modifiers {
-            ctrl: m.control_key(),
-            alt: m.alt_key(),
-            shift: m.shift_key(),
-            win: m.super_key(),
-        };
-        match Hotkey::new(modifiers, key) {
-            Ok(hotkey) => self.apply(field, Value::Hotkey(Some(hotkey))),
-            Err(err) => {
-                self.say(format!("{err}"));
-                self.focus = Some(Focus::Hotkey { row });
-            }
-        }
-    }
-
-    fn edit_text(&mut self, row: usize, mut text: String, event: &KeyEvent) {
-        match &event.logical_key {
-            LogicalKey::Named(NamedKey::Escape) => return,
-            LogicalKey::Named(NamedKey::Enter) => {
-                if let Some(field) = self.field(row) {
-                    self.apply(field, Value::Text(text));
-                }
-                return;
-            }
-            LogicalKey::Named(NamedKey::Backspace) => {
-                text.pop();
-            }
-            _ if !self.modifiers.control_key() => {
-                if let Some(typed) = &event.text {
-                    text.extend(typed.chars().filter(|c| !c.is_control()));
-                }
-            }
-            _ => {}
-        }
-        self.focus = Some(Focus::Text { row, text });
-    }
-
-    /// Finishes text being typed (clicking elsewhere keeps what was typed).
-    fn commit_text(&mut self) {
-        if let Some(Focus::Text { row, text }) = self.focus.take()
-            && let Some(field) = self.field(row)
-        {
-            self.apply(field, Value::Text(text));
-        }
-    }
-
     /// Stores a change, saves the settings file and tells the tray to reload.
     fn apply(&mut self, field: Field, value: Value) {
         if field == Field::StartWithWindows {
@@ -428,8 +421,34 @@ impl PrefsWindow {
             .intro
             .replace("{hotkey}", &self.config.hotkeys.capture.to_string());
         view::heading(canvas, self.mode, page.title, &intro, s);
+        if self.mode == Mode::Settings && self.page == HOME {
+            let look = HomeLook {
+                thumbs: &self.thumbs,
+                hover: self.hover,
+                history_on: self.config.history.keep > 0,
+                loading: self.loading.is_some(),
+                hotkey: &self.config.hotkeys.capture.to_string(),
+            };
+            home::paint(canvas, &targets, &look, s);
+        }
+        self.paint_rows(canvas, page, &targets, s);
+        if self.mode == Mode::Setup {
+            view::setup_buttons(canvas, &targets, (self.page, pages.len()), self.hover, s);
+        }
+        if let Some((text, _)) = &self.status {
+            view::status(canvas, self.mode, text, s);
+        }
+    }
+
+    fn paint_rows(
+        &self,
+        canvas: &Canvas<'_>,
+        page: &Page,
+        targets: &[(cf_render::RectF, Target)],
+        s: f32,
+    ) {
         for (index, row) in page.rows.iter().enumerate() {
-            let Some(control) = view::control_rect(&targets, index) else {
+            let Some(control) = view::control_rect(targets, index) else {
                 continue;
             };
             let value = row.field.get(&self.config, &self.ctx);
@@ -449,12 +468,6 @@ impl PrefsWindow {
                 hovered,
             };
             view::row(canvas, self.mode, control, &look, s);
-        }
-        if self.mode == Mode::Setup {
-            view::setup_buttons(canvas, &targets, (self.page, pages.len()), self.hover, s);
-        }
-        if let Some((text, _)) = &self.status {
-            view::status(canvas, self.mode, text, s);
         }
     }
 
@@ -482,36 +495,5 @@ impl Drop for PrefsWindow {
         if self.hotkeys_paused {
             let _ = ipc::post_request(ipc::Channel::Tray, RESUME_HOTKEYS_CODE);
         }
-    }
-}
-
-fn scale_of(window: &Window) -> f32 {
-    #[allow(clippy::cast_possible_truncation)] // scale factors are small
-    let scale = window.scale_factor() as f32;
-    scale
-}
-
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // positive, screen-sized
-fn to_px(v: f32) -> u32 {
-    v.round().max(1.0) as u32
-}
-
-fn center_on_pointer_monitor(window: &Window, size: PhysicalSize<u32>) {
-    let pointer = cf_platform::cursor::position();
-    let monitors = cf_platform::monitors::enumerate().unwrap_or_default();
-    let area = monitors
-        .iter()
-        .find(|m| pointer.is_some_and(|p| m.rect.contains(p)))
-        .or_else(|| monitors.iter().find(|m| m.is_primary))
-        .map(|m| m.work_area);
-    if let Some(area) = area {
-        let (w, h) = (
-            i32::try_from(size.width).unwrap_or(0),
-            i32::try_from(size.height).unwrap_or(0),
-        );
-        window.set_outer_position(PhysicalPosition::new(
-            area.x + (area.width - w) / 2,
-            area.y + (area.height - h) / 2,
-        ));
     }
 }

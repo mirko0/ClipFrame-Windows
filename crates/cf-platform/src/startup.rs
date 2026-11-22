@@ -1,4 +1,5 @@
 //! "Start with Windows": a value under the per-user `Run` key (no admin rights needed).
+//! The command passes `--background`, so signing in doesn't open ClipFrame's window.
 
 use std::path::Path;
 
@@ -34,7 +35,7 @@ pub fn is_enabled() -> bool {
 /// The Windows error code when the registry can't be changed.
 pub fn set_enabled(enabled: bool, exe: &Path) -> Result<(), u32> {
     let result = if enabled {
-        let command: Vec<u16> = format!("\"{}\"", exe.display())
+        let command: Vec<u16> = format!("\"{}\" --background", exe.display())
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
@@ -67,7 +68,8 @@ pub fn set_enabled(enabled: bool, exe: &Path) -> Result<(), u32> {
     }
 }
 
-/// Keeps an existing entry pointing at `exe` (an updated install may have moved it).
+/// Keeps an existing entry pointing at `exe` (an updated install may have moved it) and
+/// up to date with the current command line.
 pub fn refresh(exe: &Path) {
     if is_enabled() {
         let _ = set_enabled(true, exe);

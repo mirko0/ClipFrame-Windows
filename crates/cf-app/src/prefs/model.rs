@@ -11,6 +11,8 @@ use cf_core::hotkey::Hotkey;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Field {
     CaptureHotkey,
+    /// Win+Shift+S opens ClipFrame instead of the Snipping Tool.
+    ReplaceSnipping,
     RepeatHotkey,
     StartMode,
     IncludeCursor,
@@ -19,6 +21,7 @@ pub enum Field {
     SaveDir,
     FileName,
     DateFolders,
+    DeleteAfter,
     KeepRecent,
     CopyOnCapture,
     OpenEditor,
@@ -91,6 +94,8 @@ const MODE_LABELS: [&str; 7] = [
 ];
 const DELAYS: [u8; 4] = [0, 3, 5, 10];
 const DELAY_LABELS: [&str; 4] = ["Off", "3 seconds", "5 seconds", "10 seconds"];
+const DELETE_DAYS: [u16; 4] = [0, 7, 30, 90];
+const DELETE_LABELS: [&str; 4] = ["Never", "After 7 days", "After 30 days", "After 90 days"];
 const RECENT: [u16; 4] = [0, 10, 20, 50];
 const RECENT_LABELS: [&str; 4] = ["Off", "10", "20", "50"];
 const DIMS: [u8; 3] = [35, 55, 75];
@@ -110,6 +115,7 @@ impl Field {
             Self::StartMode => Kind::Choice(&MODE_LABELS),
             Self::Delay => Kind::Choice(&DELAY_LABELS),
             Self::KeepRecent => Kind::Choice(&RECENT_LABELS),
+            Self::DeleteAfter => Kind::Choice(&DELETE_LABELS),
             Self::SpotlightDim => Kind::Choice(&DIM_LABELS),
             Self::KeepGpu => Kind::Choice(&GPU_LABELS),
             Self::SaveDir => Kind::Folder,
@@ -121,6 +127,7 @@ impl Field {
             | Self::OpenEditor
             | Self::UpdateOnEdit
             | Self::Toast
+            | Self::ReplaceSnipping
             | Self::StartWithWindows => Kind::Toggle,
         }
     }
@@ -137,6 +144,8 @@ impl Field {
             ),
             Self::Delay => Value::Choice(nearest(&DELAYS, c.capture.delay_secs)),
             Self::KeepRecent => Value::Choice(nearest(&RECENT, c.history.keep)),
+            Self::DeleteAfter => Value::Choice(nearest(&DELETE_DAYS, c.output.delete_after_days)),
+            Self::ReplaceSnipping => Value::Bool(c.hotkeys.replace_snipping_tool),
             Self::SpotlightDim => Value::Choice(nearest(&DIMS, c.editor.spotlight_dim)),
             Self::KeepGpu => Value::Choice(
                 GPU.iter()
@@ -185,6 +194,10 @@ impl Field {
             (Self::StartMode, Value::Choice(i)) => c.capture.default_mode = *pick(&MODES, i),
             (Self::Delay, Value::Choice(i)) => c.capture.delay_secs = *pick(&DELAYS, i),
             (Self::KeepRecent, Value::Choice(i)) => c.history.keep = *pick(&RECENT, i),
+            (Self::DeleteAfter, Value::Choice(i)) => {
+                c.output.delete_after_days = *pick(&DELETE_DAYS, i);
+            }
+            (Self::ReplaceSnipping, Value::Bool(b)) => c.hotkeys.replace_snipping_tool = b,
             (Self::SpotlightDim, Value::Choice(i)) => c.editor.spotlight_dim = *pick(&DIMS, i),
             (Self::KeepGpu, Value::Choice(i)) => c.performance.keep_gpu_ready = *pick(&GPU, i),
             (Self::SaveDir, Value::Text(path)) => {
@@ -233,8 +246,13 @@ const fn row(field: Field, label: &'static str, hint: &'static str) -> Row {
     Row { field, label, hint }
 }
 
-/// The settings window's pages (shown with a sidebar).
-pub const SETTINGS: [Page; 4] = [
+/// The main window's pages (shown with a sidebar): home, then the settings.
+pub const SETTINGS: [Page; 5] = [
+    Page {
+        title: "Home",
+        intro: "Press {hotkey} anywhere to capture.",
+        rows: &[],
+    },
     Page {
         title: "Capture",
         intro: "",
@@ -243,6 +261,11 @@ pub const SETTINGS: [Page; 4] = [
                 Field::CaptureHotkey,
                 "Capture shortcut",
                 "Opens the capture overlay from anywhere.",
+            ),
+            row(
+                Field::ReplaceSnipping,
+                "Use Win+Shift+S",
+                "Opens ClipFrame instead of the Snipping Tool, which then never starts.",
             ),
             row(
                 Field::RepeatHotkey,
@@ -273,6 +296,11 @@ pub const SETTINGS: [Page; 4] = [
                 Field::DateFolders,
                 "Monthly folders",
                 "Save into a YYYY-MM subfolder.",
+            ),
+            row(
+                Field::DeleteAfter,
+                "Delete old captures",
+                "Only captures ClipFrame saved.",
             ),
             row(
                 Field::KeepRecent,
@@ -313,6 +341,11 @@ pub const SETTINGS: [Page; 4] = [
         ],
     },
 ];
+
+/// The home page in [`SETTINGS`].
+pub const HOME: usize = 0;
+/// The first real settings page in [`SETTINGS`].
+pub const FIRST_SETTINGS: usize = 1;
 
 /// The first-run setup, one page per step.
 pub const SETUP: [Page; 7] = [
@@ -410,6 +443,26 @@ mod tests {
             .set(&mut c, Value::Choice(99), &ctx)
             .unwrap();
         assert_eq!(c.capture.default_mode, CaptureMode::AllMonitors);
+    }
+
+    #[test]
+    fn clean_up_and_snipping_settings_map_to_the_config() {
+        let (ctx, mut c) = (ctx(), Config::default());
+        assert_eq!(
+            Field::DeleteAfter.get(&c, &ctx),
+            Value::Choice(0),
+            "never by default"
+        );
+        Field::DeleteAfter
+            .set(&mut c, Value::Choice(2), &ctx)
+            .unwrap();
+        assert_eq!(c.output.delete_after_days, 30);
+        Field::ReplaceSnipping
+            .set(&mut c, Value::Bool(true), &ctx)
+            .unwrap();
+        assert!(c.hotkeys.replace_snipping_tool);
+        assert_eq!(SETTINGS[HOME].title, "Home");
+        assert!(SETTINGS[HOME].rows.is_empty());
     }
 
     #[test]

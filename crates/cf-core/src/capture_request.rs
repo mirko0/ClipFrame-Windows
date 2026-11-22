@@ -16,8 +16,10 @@ pub enum CaptureRequest {
     RepeatLast,
     /// Open the `n`-th most recent capture (0 = newest) in the editor.
     OpenRecent(u8),
-    /// Open the settings window.
+    /// Open the main window on its first settings page.
     Settings,
+    /// Open the main window on its home page (recent captures, actions).
+    Home,
     /// Open the first-run setup.
     Onboarding,
     /// Exit now (before the app is uninstalled or updated).
@@ -33,6 +35,7 @@ impl CaptureRequest {
             Self::Settings => 3,
             Self::Onboarding => 4,
             Self::Quit => 5,
+            Self::Home => 6,
             Self::OpenRecent(n) => RECENT_BASE + u32::from(n),
         }
     }
@@ -45,6 +48,7 @@ impl CaptureRequest {
             3 => Some(Self::Settings),
             4 => Some(Self::Onboarding),
             5 => Some(Self::Quit),
+            6 => Some(Self::Home),
             c if (RECENT_BASE..RECENT_BASE + u32::from(MAX_RECENT)).contains(&c) => {
                 u8::try_from(c - RECENT_BASE).ok().map(Self::OpenRecent)
             }
@@ -60,6 +64,7 @@ impl CaptureRequest {
             Self::Settings => "settings".into(),
             Self::Onboarding => "onboarding".into(),
             Self::Quit => "quit".into(),
+            Self::Home => "home".into(),
             Self::OpenRecent(n) => format!("{RECENT_ARG}{n}"),
         }
     }
@@ -72,6 +77,7 @@ impl CaptureRequest {
             "settings" => Some(Self::Settings),
             "onboarding" => Some(Self::Onboarding),
             "quit" => Some(Self::Quit),
+            "home" => Some(Self::Home),
             _ => arg
                 .strip_prefix(RECENT_ARG)?
                 .parse::<u8>()
@@ -86,8 +92,9 @@ impl CaptureRequest {
 mod tests {
     use super::*;
 
-    const ALL: [CaptureRequest; 7] = [
+    const ALL: [CaptureRequest; 8] = [
         CaptureRequest::Interactive,
+        CaptureRequest::Home,
         CaptureRequest::Quit,
         CaptureRequest::RepeatLast,
         CaptureRequest::Settings,

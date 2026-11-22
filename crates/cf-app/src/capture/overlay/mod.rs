@@ -3,6 +3,7 @@
 mod hints;
 mod input;
 mod keys;
+mod modebar;
 mod paint;
 mod picker;
 mod targets;
@@ -177,6 +178,8 @@ impl Overlay {
                 .pointer
                 .and_then(|p| self.frames.iter().find_map(|f| f.pixel_at(p))),
             hint: hints::hint(mode, adjusting, self.selection.is_dragging()),
+            mode,
+            show_bar: !self.selection.is_dragging(),
         }
     }
 
@@ -225,6 +228,10 @@ impl Overlay {
     }
 
     fn update_cursor_icon(&self, index: usize, p: Point) {
+        if self.on_mode_bar(index, p).is_some() {
+            self.windows[index].window.set_cursor(CursorIcon::Pointer);
+            return;
+        }
         let mode = self.options.mode;
         let idle = if is_pick_mode(mode) {
             CursorIcon::Pointer
@@ -243,6 +250,22 @@ impl Overlay {
             }
         };
         self.windows[index].window.set_cursor(icon);
+    }
+
+    /// Where `p` is on window `index`'s mode bar, if on it. The bar is hidden while dragging.
+    fn on_mode_bar(&self, index: usize, p: Point) -> Option<modebar::Spot> {
+        if self.selection.is_dragging() {
+            return None;
+        }
+        let w = &self.windows[index];
+        let size = w.window.inner_size();
+        #[allow(clippy::cast_precision_loss)] // window sizes and local offsets are small
+        let (screen, local) = (
+            (size.width as f32, size.height as f32),
+            ((p.x - w.monitor.x) as f32, (p.y - w.monitor.y) as f32),
+        );
+        let s = w.scale();
+        modebar::spot(screen, s, local)
     }
 
     fn drag_modifiers(&self) -> DragModifiers {

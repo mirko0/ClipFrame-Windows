@@ -1,10 +1,9 @@
-//! The one-line help shown at the top of the overlay.
+//! The one-line help shown above the mode bar.
 
 use cf_core::capture_mode::CaptureMode;
 
 const ADJUST: &str =
     "Enter or double-click to capture · arrows move · Ctrl+arrows resize · Esc cancel";
-const SWITCH: &str = "F free · R rect · W window · E element · C page · M monitor · A all";
 
 /// Help for `mode`; `adjusting` when a selection waits for Enter, empty while dragging.
 pub fn hint(mode: CaptureMode, adjusting: bool, dragging: bool) -> String {
@@ -22,7 +21,7 @@ pub fn hint(mode: CaptureMode, adjusting: bool, dragging: bool) -> String {
         CaptureMode::BrowserContent => "Click a browser to capture its page",
         CaptureMode::Monitor | CaptureMode::AllMonitors => "Click a monitor",
     };
-    format!("{action} · {SWITCH} · Esc cancel")
+    format!("{action} · Esc cancel")
 }
 
 #[cfg(test)]

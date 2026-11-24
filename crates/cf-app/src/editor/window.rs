@@ -24,6 +24,7 @@ pub fn create(
         .with_title("ClipFrame")
         .with_visible(false);
     let window = event_loop.create_window(attributes)?;
+    crate::window_icon::apply(&window);
     let work_area = work_area_near(near);
     let scale = scale_of(&window);
     let size = window_size(image, scale, work_area);

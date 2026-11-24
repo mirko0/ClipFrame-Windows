@@ -127,6 +127,7 @@ pub(super) fn create_window(
             .with_enabled_buttons(WindowButtons::CLOSE | WindowButtons::MINIMIZE)
             .with_visible(false),
     )?;
+    crate::window_icon::apply(&window);
     let scale = scale_of(&window);
     let size = PhysicalSize::new(to_px(view::WIDTH * scale), to_px(view::HEIGHT * scale));
     let _ = window.request_inner_size(size);

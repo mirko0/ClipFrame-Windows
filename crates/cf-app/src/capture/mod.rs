@@ -75,10 +75,13 @@ impl CaptureController {
 
     /// Whether an overlay or editor is open or a delayed capture is pending.
     pub fn is_busy(&self) -> bool {
-        self.overlay.is_some()
-            || self.delayed.is_some()
-            || !self.editors.is_empty()
-            || !self.pins.is_empty()
+        self.is_capturing() || !self.editors.is_empty() || !self.pins.is_empty()
+    }
+
+    /// Whether an overlay is open or a delayed capture is pending. Open editors and pins
+    /// don't stop a new capture: it opens in a window of its own.
+    fn is_capturing(&self) -> bool {
+        self.overlay.is_some() || self.delayed.is_some()
     }
 
     /// Starts a capture now, or schedules it when a delay is configured.
@@ -89,7 +92,7 @@ impl CaptureController {
         config: &Config,
         delivery: &Delivery,
     ) {
-        if self.is_busy() {
+        if self.is_capturing() {
             tracing::debug!(?request, "already capturing; request ignored");
             return;
         }
